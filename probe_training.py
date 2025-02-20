@@ -2,6 +2,7 @@
 import torch as t
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 from sae_lens import SAE, HookedSAETransformer
 import pandas as pd
@@ -11,7 +12,6 @@ import os
 import time  # For timing the training loops
 
 # For reproducibility
-t.manual_seed(123)
 
 ###############################################################################
 # Probe Definition
@@ -182,7 +182,6 @@ def test_last_token_extraction():
 ###############################################################################
 # Main Pipeline
 ###############################################################################
-
 # %%
 if __name__ == "__main__":
     # Run simple test for the last-token extraction helper.
@@ -229,51 +228,46 @@ if __name__ == "__main__":
     n = df.shape[0]
     train_size = int(0.8 * n)  # 80% for training
     
-    # Loop over different seeds.
-    N_SEEDS = 30
+    N_SEEDS = 50
     for seed in range(N_SEEDS):
         print(f"\nStarting training loop with seed {seed}...")
         start_time = time.time()
         
-        # Randomly scramble indices for splitting features.
+        # Compute a train/test split for the entire dataset using this seed.
         np.random.seed(seed)
         indices = np.random.permutation(n)
         train_indices = indices[:train_size]
         test_indices = indices[train_size:]
         
-        for feature_type, feats_all in features_map.items():
-            # Create train/test splits for the features.
-            train_feats = feats_all[train_indices]
-            test_feats = feats_all[test_indices]
+        # Loop over each label.
+        for label_col in label_columns:
+            # Prepare the labels (same for all feature types).
+            labels_all = t.tensor(df[label_col].values)
+            train_labels = labels_all[train_indices]
+            test_labels = labels_all[test_indices]
             
-            for label_col in label_columns:
-                # Create corresponding label splits.
-                labels_all = t.tensor(df[label_col].values)
-                train_labels = labels_all[train_indices]
-                test_labels = labels_all[test_indices]
+            # Dictionary to hold the probes for the three feature types for cosine similarity computation.
+            probes_for_label = {}
+            # Temporary storage for the per-probe results for this seed & label.
+            temp_results = {}
+            
+            # Train a probe for each feature type.
+            for feature_type, feats_all in features_map.items():
+                train_feats = feats_all[train_indices]
+                test_feats = feats_all[test_indices]
                 
-                #print(f"Training probe on {feature_type} features for label '{label_col}' with seed {seed}...")
-                # Set the random seed right before initialization/training so the probe
-                # gets the same initialization and same batch ordering.
+                # Set the torch seed to ensure probe initialization consistency.
                 t.manual_seed(seed)
-                
-                # Train the probe.
                 probe, _ = train_probe_model(
                     train_feats, train_labels, dim=train_feats.size(1),
                     epochs=2, batch_size=8, device='cuda', lr=0.005
                 )
-                
-                # Evaluate on both train and test splits.
                 train_loss, train_acc = evaluate_probe_full(probe, train_feats, train_labels, device='cuda')
                 test_loss, test_acc = evaluate_probe_full(probe, test_feats, test_labels, device='cuda')
+                weight_norm = probe.net.weight.norm().item()
                 
-                # Only save probes for the last seed
-                if seed == N_SEEDS - 1:
-                    model_filename = f"probe_{feature_type}_{label_col.replace(' ', '_')}_seed_{seed}.pt"
-                    t.save(probe.state_dict(), os.path.join(probe_save_dir, model_filename))
-                
-                # Append results.
-                results.append({
+                probes_for_label[feature_type] = probe
+                temp_results[feature_type] = {
                     "Seed": seed,
                     "Feature Type": feature_type,
                     "Label": label_col,
@@ -281,11 +275,37 @@ if __name__ == "__main__":
                     "Train Accuracy": train_acc,
                     "Test Loss": test_loss,
                     "Test Accuracy": test_acc,
-                })
-                t.cuda.empty_cache()
+                    "Weight Norm": weight_norm
+                }
+                
+                # Save the probe if this seed is among the first 20.
+                if seed < 20:
+                    safe_label = label_col.replace(' ', '_')
+                    model_filename = f"probe_{feature_type}_{safe_label}_seed_{seed}.pt"
+                    t.save(probe.state_dict(), os.path.join(probe_save_dir, model_filename))
+            
+            # Compute cosine similarities between the weight vectors for the three probes.
+            # Extract the weight vectors (flattening them)
+            w_input = probes_for_label["sae_input"].net.weight.view(-1)
+            w_recons = probes_for_label["sae_recons"].net.weight.view(-1)
+            w_diff = probes_for_label["sae_diff"].net.weight.view(-1)
+            
+            cos_sim_input_recons = F.cosine_similarity(w_input, w_recons, dim=0).item()
+            cos_sim_input_diff = F.cosine_similarity(w_input, w_diff, dim=0).item()
+            cos_sim_recons_diff = F.cosine_similarity(w_recons, w_diff, dim=0).item();
+            
+            # Add the cosine similarity metrics to each probe's result.
+            for feature_type in features_map.keys():
+                temp_results[feature_type]["Cosine Sim Input-Recons"] = cos_sim_input_recons
+                temp_results[feature_type]["Cosine Sim Input-Diff"] = cos_sim_input_diff
+                temp_results[feature_type]["Cosine Sim Recons-Diff"] = cos_sim_recons_diff
+                
+                # Append the result to the main results list.
+                results.append(temp_results[feature_type])
+            
+            t.cuda.empty_cache()
         
         loop_duration = time.time() - start_time
-        # Update loop time for all results of this seed.
         print(f"Training loop with seed {seed} completed in {loop_duration:.2f} seconds.")
     
     # Create a results table and print it.
@@ -293,4 +313,50 @@ if __name__ == "__main__":
     print("\nFinal Evaluation Results:")
     print(results_df.to_string(index=False))
     results_df.to_csv("probe_results.csv", index=False)
+    
+# %%
+if __name__ == "__main__":
+    ###########################################################################
+    # Compute average cosine similarities across saved probes
+    ###########################################################################
+    similarity_results = []
+    # For each combination of feature type and label, load the saved probes from the first 20 seeds.
+    for label_col in label_columns:
+        safe_label = label_col.replace(' ', '_')
+        for feature_type in features_map.keys():
+            weight_vectors = []
+            for seed in range(20):
+                model_filename = f"probe_{feature_type}_{safe_label}_seed_{seed}.pt"
+                filepath = os.path.join(probe_save_dir, model_filename)
+                if os.path.exists(filepath):
+                    # Initialize a probe and load its state dict.
+                    dummy_probe = Probe(activation_dim=features_map[feature_type].size(1)).to('cpu')
+                    state_dict = t.load(filepath, map_location='cpu')
+                    dummy_probe.load_state_dict(state_dict)
+                    weight_vectors.append(dummy_probe.net.weight.view(-1))
+            
+            # Compute pairwise cosine similarities among these weight vectors.
+            sims = []
+            num = len(weight_vectors)
+            for i in range(num):
+                for j in range(i+1, num):
+                    sim = F.cosine_similarity(weight_vectors[i], weight_vectors[j], dim=0).item()
+                    sims.append(sim)
+            if sims:
+                avg_sim = np.mean(sims)
+                std_sim = np.std(sims)
+            else:
+                avg_sim = None
+                std_sim = None
+            similarity_results.append({
+                "Feature Type": feature_type,
+                "Label": label_col,
+                "Average Cosine Similarity": avg_sim,
+                "Cosine Similarity Std": std_sim
+            })
+    
+    similarities_df = pd.DataFrame(similarity_results)
+    print("\nProbe Similarities across saved probes:")
+    print(similarities_df.to_string(index=False))
+    similarities_df.to_csv("probe_similarities.csv", index=False)
 # %%
