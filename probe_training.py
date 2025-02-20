@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 import os
+import time  # For timing the training loops
 
 # For reproducibility
 t.manual_seed(123)
@@ -200,87 +201,100 @@ if __name__ == "__main__":
     )
     model2b = HookedSAETransformer.from_pretrained("gemma-2-2b", device='cuda')
     
-    # ----------------------
-    # Train/test split.
-    # ----------------------
-    train_df, test_df = train_test_split_df(df, test_size=0.2, seed=123)
+    # Tokenize the entire dataset at once.
+    print("Tokenizing entire dataset...")
+    tokenized_all = tokenize_data(df, model2b.tokenizer)
     
-    # ----------------------
-    # Tokenize the statements.
-    # ----------------------
-    tokenized_train = tokenize_data(train_df, model2b.tokenizer)
-    tokenized_test = tokenize_data(test_df, model2b.tokenizer)
-    
-    # ----------------------
-    # Generate features using our hooked SAE in mini-batches.
-    # ----------------------
-    print("Generating training features...")
-    feats_train_input, feats_train_recons, feats_train_diff = generate_probing_features(
-        tokenized_train, model2b, sae, batch_size=8, device='cuda'
-    )
-    print("Generating test features...")
-    feats_test_input, feats_test_recons, feats_test_diff = generate_probing_features(
-        tokenized_test, model2b, sae, batch_size=8, device='cuda'
+    # Generate features for the entire dataset.
+    print("Generating features for entire dataset...")
+    feats_all_input, feats_all_recons, feats_all_diff = generate_probing_features(
+        tokenized_all, model2b, sae, batch_size=8, device='cuda'
     )
     
-    # ----------------------
-    # Determine the feature (model) dimension.
-    # ----------------------
-    act_dim = feats_train_input.size(1)
+    # Map each feature type to its corresponding feature tensor.
+    features_map = {
+        "sae_input": feats_all_input,
+        "sae_recons": feats_all_recons,
+        "sae_diff": feats_all_diff
+    }
     
-    # Define the label columns to train on.
     label_columns = ['label', 'has_alice', 'has_not',
                      'has_alice xor has_not', 'has_alice xor label', 'has_not xor label']
-    
-    # Map each feature type to its corresponding training and test features.
-    features_map = {
-        "sae_input": (feats_train_input, feats_test_input),
-        "sae_recons": (feats_train_recons, feats_test_recons),
-        "sae_diff": (feats_train_diff, feats_test_diff)
-    }
     
     # Directory to save trained probes.
     probe_save_dir = "trained_probes"
     os.makedirs(probe_save_dir, exist_ok=True)
     
-    # Results list to store evaluation metrics.
     results = []
+    n = df.shape[0]
+    train_size = int(0.8 * n)  # 80% for training
     
-    # Loop over each feature type and each label.
-    # Here we use 1 epoch for demonstration; adjust epochs as needed.
-    for feature_type, (train_feats, test_feats) in features_map.items():
-        for label_col in label_columns:
-            print(f"Training probe on {feature_type} features for label '{label_col}'...")
-            # Convert labels to tensors.
-            train_labels = t.tensor(train_df[label_col].values)
-            test_labels = t.tensor(test_df[label_col].values)
+    # Loop over different seeds.
+    N_SEEDS = 30
+    for seed in range(N_SEEDS):
+        print(f"\nStarting training loop with seed {seed}...")
+        start_time = time.time()
+        
+        # Randomly scramble indices for splitting features.
+        np.random.seed(seed)
+        indices = np.random.permutation(n)
+        train_indices = indices[:train_size]
+        test_indices = indices[train_size:]
+        
+        for feature_type, feats_all in features_map.items():
+            # Create train/test splits for the features.
+            train_feats = feats_all[train_indices]
+            test_feats = feats_all[test_indices]
             
-            # Train the probe.
-            probe, _ = train_probe_model(
-                train_feats, train_labels, dim=act_dim,
-                epochs=1, batch_size=8, device='cuda'
-            )
-            
-            # Evaluate on training data.
-            train_loss, train_acc = evaluate_probe_full(probe, train_feats, train_labels, device='cuda')
-            # Evaluate on test data.
-            test_loss, test_acc = evaluate_probe_full(probe, test_feats, test_labels, device='cuda')
-            
-            # Save the trained probe.
-            model_filename = f"probe_{feature_type}_{label_col.replace(' ', '_')}.pt"
-            t.save(probe.state_dict(), os.path.join(probe_save_dir, model_filename))
-            
-            # Append results.
-            results.append({
-                "Feature Type": feature_type,
-                "Label": label_col,
-                "Train Loss": train_loss,
-                "Train Accuracy": train_acc,
-                "Test Loss": test_loss,
-                "Test Accuracy": test_acc
-            })
+            for label_col in label_columns:
+                # Create corresponding label splits.
+                labels_all = t.tensor(df[label_col].values)
+                train_labels = labels_all[train_indices]
+                test_labels = labels_all[test_indices]
+                
+                #print(f"Training probe on {feature_type} features for label '{label_col}' with seed {seed}...")
+                # Set the random seed right before initialization/training so the probe
+                # gets the same initialization and same batch ordering.
+                t.manual_seed(seed)
+                
+                # Train the probe.
+                probe, _ = train_probe_model(
+                    train_feats, train_labels, dim=train_feats.size(1),
+                    epochs=2, batch_size=8, device='cuda', lr=0.005
+                )
+                
+                # Evaluate on both train and test splits.
+                train_loss, train_acc = evaluate_probe_full(probe, train_feats, train_labels, device='cuda')
+                test_loss, test_acc = evaluate_probe_full(probe, test_feats, test_labels, device='cuda')
+                
+                # Only save probes for the last seed
+                if seed == N_SEEDS - 1:
+                    model_filename = f"probe_{feature_type}_{label_col.replace(' ', '_')}_seed_{seed}.pt"
+                    t.save(probe.state_dict(), os.path.join(probe_save_dir, model_filename))
+                
+                # Append results.
+                results.append({
+                    "Seed": seed,
+                    "Feature Type": feature_type,
+                    "Label": label_col,
+                    "Train Loss": train_loss,
+                    "Train Accuracy": train_acc,
+                    "Test Loss": test_loss,
+                    "Test Accuracy": test_acc,
+                    "Loop Time": None  # to be filled in after the loop
+                })
+                t.cuda.empty_cache()
+        
+        loop_duration = time.time() - start_time
+        # Update loop time for all results of this seed.
+        for res in results:
+            if res["Seed"] == seed:
+                res["Loop Time"] = loop_duration
+        print(f"Training loop with seed {seed} completed in {loop_duration:.2f} seconds.")
     
     # Create a results table and print it.
     results_df = pd.DataFrame(results)
     print("\nFinal Evaluation Results:")
     print(results_df.to_string(index=False))
+    results_df.to_csv("probe_results.csv", index=False)
+# %%
