@@ -281,15 +281,11 @@ if __name__ == "__main__":
                     "Train Accuracy": train_acc,
                     "Test Loss": test_loss,
                     "Test Accuracy": test_acc,
-                    "Loop Time": None  # to be filled in after the loop
                 })
                 t.cuda.empty_cache()
         
         loop_duration = time.time() - start_time
         # Update loop time for all results of this seed.
-        for res in results:
-            if res["Seed"] == seed:
-                res["Loop Time"] = loop_duration
         print(f"Training loop with seed {seed} completed in {loop_duration:.2f} seconds.")
     
     # Create a results table and print it.
