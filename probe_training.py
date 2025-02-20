@@ -1,4 +1,3 @@
-
 # %%
 import torch as t
 import torch.nn as nn
@@ -8,9 +7,10 @@ from sae_lens import SAE, HookedSAETransformer
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
+import os
 
 # For reproducibility
-SEED = 123
+t.manual_seed(123)
 
 ###############################################################################
 # Probe Definition
@@ -27,7 +27,7 @@ class Probe(nn.Module):
 ###############################################################################
 # Data Helpers
 ###############################################################################
-def train_test_split_df(df, test_size=0.2, seed=SEED):
+def train_test_split_df(df, test_size=0.2, seed=123):
     np.random.seed(seed)
     shuffled = df.sample(frac=1, random_state=seed).reset_index(drop=True)
     split_idx = int((1 - test_size) * len(shuffled))
@@ -46,8 +46,6 @@ def get_last_token_indices(attention_mask):
     Given an attention mask of shape (batch, seq_len) where valid tokens are 1
     and padded tokens are 0, compute the index of the last token for each sample.
     """
-    # attention_mask: (batch, seq_len)
-    # sum gives the count of valid tokens per sample; subtract one to get the index.
     token_counts = attention_mask.sum(dim=1)
     last_indices = token_counts - 1
     return last_indices
@@ -65,7 +63,7 @@ def extract_last_token_acts(act_tensor, attention_mask):
 ###############################################################################
 # Feature Generation
 ###############################################################################
-def generate_probing_features(tokenized, model, sae, batch_size=2, device='cuda'):
+def generate_probing_features(tokenized, model, sae, batch_size=8, device='cuda'):
     """
     Runs the model (with run_with_cache_with_saes) in batches on the tokenized input.
     For each batch it extracts the three features:
@@ -81,8 +79,6 @@ def generate_probing_features(tokenized, model, sae, batch_size=2, device='cuda'
     for i in tqdm(range(0, n, batch_size), desc="Generating features"):
         batch_ids = input_ids[i:i + batch_size]
         batch_mask = attention_mask[i:i + batch_size]
-        # Run the model. It is assumed that model2b (our hooked transformer) has the
-        # method run_with_cache_with_saes and that the sae (pre-loaded) is provided.
         batch_out = model.run_with_cache_with_saes(
             batch_ids,
             saes=sae,
@@ -110,8 +106,7 @@ def generate_probing_features(tokenized, model, sae, batch_size=2, device='cuda'
 def train_probe_model(features, labels, dim, lr=1e-2, epochs=5, batch_size=8, device='cuda'):
     """
     Trains a linear probe (a one-layer model) on the provided features to predict
-    the binary labels. The features are expected to have shape (N, dim) and labels
-    shape (N,). Returns the trained probe and a list of loss values.
+    the binary labels. Returns the trained probe and a list of loss values.
     """
     probe = Probe(dim).to(device)
     optimizer = optim.AdamW(probe.parameters(), lr=lr)
@@ -132,16 +127,21 @@ def train_probe_model(features, labels, dim, lr=1e-2, epochs=5, batch_size=8, de
             losses.append(loss.item())
     return probe, losses
 
-def evaluate_probe(probe, features, labels, device='cuda'):
+def evaluate_probe_full(probe, features, labels, device='cuda'):
     """
-    Evaluates the given probe on the test features and returns the loss.
+    Evaluates the probe on the given features and labels.
+    Returns the loss and accuracy.
     """
     probe.eval()
     criterion = nn.BCEWithLogitsLoss()
     with t.no_grad():
-        logits = probe(features.to(device))
-        loss = criterion(logits, labels.to(device).float())
-    return loss.item()
+        feats = features.to(device)
+        lbls = labels.to(device).float()
+        logits = probe(feats)
+        loss = criterion(logits, lbls)
+        preds = (logits > 0).float()
+        accuracy = (preds == lbls).float().mean().item()
+    return loss.item(), accuracy
 
 ###############################################################################
 # Simple Test Case for Last Token Extraction
@@ -186,22 +186,24 @@ def test_last_token_extraction():
 if __name__ == "__main__":
     # Run simple test for the last-token extraction helper.
     test_last_token_extraction()
-    # Run the main probe training pipeline.
+    
+    # Read datasets and combine them.
     data = pd.read_csv("cities_alice.csv")
     neg_data = pd.read_csv("neg_cities_alice.csv")
-    df = pd.concat([data, neg_data]).sample(frac=1, random_state=SEED).reset_index(drop=True)
-
+    df = pd.concat([data, neg_data])
+    
+    # Load SAE and the model.
     sae, cfg_dict, sparsity = SAE.from_pretrained(
-    release = "gemma-scope-2b-pt-res-canonical",
-    sae_id = "layer_19/width_16k/canonical",
-    device = "cuda"
+        release="gemma-scope-2b-pt-res-canonical",
+        sae_id="layer_19/width_16k/canonical",
+        device="cuda"
     )
-    model2b = HookedSAETransformer.from_pretrained("gemma-2-2b", device = 'cuda')
+    model2b = HookedSAETransformer.from_pretrained("gemma-2-2b", device='cuda')
     
     # ----------------------
     # Train/test split.
     # ----------------------
-    train_df, test_df = train_test_split_df(df, test_size=0.2, seed=SEED)
+    train_df, test_df = train_test_split_df(df, test_size=0.2, seed=123)
     
     # ----------------------
     # Tokenize the statements.
@@ -210,22 +212,15 @@ if __name__ == "__main__":
     tokenized_test = tokenize_data(test_df, model2b.tokenizer)
     
     # ----------------------
-    # Convert labels to tensors.
-    # ----------------------
-    # We assume that the DataFrame has a column called "label" (a binary 0/1 value).
-    train_labels = t.tensor(train_df["has_alice xor has_not"].values)
-    test_labels = t.tensor(test_df["has_alice xor has_not"].values)
-    
-    # ----------------------
     # Generate features using our hooked SAE in mini-batches.
     # ----------------------
     print("Generating training features...")
     feats_train_input, feats_train_recons, feats_train_diff = generate_probing_features(
-        tokenized_train, model2b, sae, batch_size=4, device='cuda'
+        tokenized_train, model2b, sae, batch_size=8, device='cuda'
     )
     print("Generating test features...")
     feats_test_input, feats_test_recons, feats_test_diff = generate_probing_features(
-        tokenized_test, model2b, sae, batch_size=4, device='cuda'
+        tokenized_test, model2b, sae, batch_size=8, device='cuda'
     )
     
     # ----------------------
@@ -233,41 +228,59 @@ if __name__ == "__main__":
     # ----------------------
     act_dim = feats_train_input.size(1)
     
-    # ----------------------
-    # Train probes on the three feature types.
-    # ----------------------
-    print("Training probe on hook_sae_input activations...")
-    probe_input, losses_input = train_probe_model(
-        feats_train_input, train_labels, dim=act_dim,
-        epochs=1, batch_size=8, device='cuda'
-    )
-    test_loss_input = evaluate_probe(probe_input, feats_test_input, test_labels, device='cuda')
+    # Define the label columns to train on.
+    label_columns = ['label', 'has_alice', 'has_not',
+                     'has_alice xor has_not', 'has_alice xor label', 'has_not xor label']
     
-    print("Training probe on hook_sae_recons activations...")
-    probe_recons, losses_recons = train_probe_model(
-        feats_train_recons, train_labels, dim=act_dim,
-        epochs=1, batch_size=8, device='cuda'
-    )
-    test_loss_recons = evaluate_probe(probe_recons, feats_test_recons, test_labels, device='cuda')
+    # Map each feature type to its corresponding training and test features.
+    features_map = {
+        "sae_input": (feats_train_input, feats_test_input),
+        "sae_recons": (feats_train_recons, feats_test_recons),
+        "sae_diff": (feats_train_diff, feats_test_diff)
+    }
     
-    print("Training probe on (input - recons) activations...")
-    probe_diff, losses_diff = train_probe_model(
-        feats_train_diff, train_labels, dim=act_dim,
-        epochs=1, batch_size=8, device='cuda'
-    )
-    test_loss_diff = evaluate_probe(probe_diff, feats_test_diff, test_labels, device='cuda')
+    # Directory to save trained probes.
+    probe_save_dir = "trained_probes"
+    os.makedirs(probe_save_dir, exist_ok=True)
     
-    # ----------------------
-    # Save trained probes.
-    # ----------------------
-    t.save(probe_input.state_dict(), "probe_sae_input.pt")
-    t.save(probe_recons.state_dict(), "probe_sae_recons.pt")
-    t.save(probe_diff.state_dict(), "probe_sae_diff.pt")
+    # Results list to store evaluation metrics.
+    results = []
     
-    # ----------------------
-    # Report results.
-    # ----------------------
-    print("Out-of-sample (test) losses:")
-    print(f"Probe (sae_input):   test loss = {test_loss_input}")
-    print(f"Probe (sae_recons):  test loss = {test_loss_recons}")
-    print(f"Probe (sae_diff):    test loss = {test_loss_diff}")
+    # Loop over each feature type and each label.
+    # Here we use 1 epoch for demonstration; adjust epochs as needed.
+    for feature_type, (train_feats, test_feats) in features_map.items():
+        for label_col in label_columns:
+            print(f"Training probe on {feature_type} features for label '{label_col}'...")
+            # Convert labels to tensors.
+            train_labels = t.tensor(train_df[label_col].values)
+            test_labels = t.tensor(test_df[label_col].values)
+            
+            # Train the probe.
+            probe, _ = train_probe_model(
+                train_feats, train_labels, dim=act_dim,
+                epochs=1, batch_size=8, device='cuda'
+            )
+            
+            # Evaluate on training data.
+            train_loss, train_acc = evaluate_probe_full(probe, train_feats, train_labels, device='cuda')
+            # Evaluate on test data.
+            test_loss, test_acc = evaluate_probe_full(probe, test_feats, test_labels, device='cuda')
+            
+            # Save the trained probe.
+            model_filename = f"probe_{feature_type}_{label_col.replace(' ', '_')}.pt"
+            t.save(probe.state_dict(), os.path.join(probe_save_dir, model_filename))
+            
+            # Append results.
+            results.append({
+                "Feature Type": feature_type,
+                "Label": label_col,
+                "Train Loss": train_loss,
+                "Train Accuracy": train_acc,
+                "Test Loss": test_loss,
+                "Test Accuracy": test_acc
+            })
+    
+    # Create a results table and print it.
+    results_df = pd.DataFrame(results)
+    print("\nFinal Evaluation Results:")
+    print(results_df.to_string(index=False))
