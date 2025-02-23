@@ -3,11 +3,13 @@ import torch as t
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, TensorDataset
 from sae_lens import SAE, HookedSAETransformer
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
+from warnings import warn
 import os
 import time  # For timing the training loops
 
@@ -179,9 +181,57 @@ def test_last_token_extraction():
     assert t.allclose(last_acts[2], expected_2), "Test failed for sample 2"
     print("Test last_token_extraction passed.")
 
-###############################################################################
-# Main Pipeline
-###############################################################################
+
+# Get active latents and their activations
+
+def record_active_latents(tokenized, model, sae, batch_size=8, device='cuda'):
+    """
+    Runs the model in batches and records which latents are active (nonzero) at the last token,
+    along with their activation values.
+    
+    Returns:
+    - List of tuples (nonzero_indices, activation_values) for each input sample
+    """
+    input_ids = tokenized["input_ids"].to(device)
+    attention_mask = tokenized["attention_mask"].to(device)
+    results = []
+    n = input_ids.size(0)
+    
+    for i in tqdm(range(0, n, batch_size), desc="Recording active latents"):
+        batch_ids = input_ids[i:i + batch_size]
+        batch_mask = attention_mask[i:i + batch_size]
+        
+        # Get activations from the model
+        batch_out = model.run_with_cache_with_saes(
+            batch_ids,
+            saes=sae,
+            names_filter=lambda name: name in ['blocks.19.hook_resid_post.hook_sae_acts_post']
+        )[1]
+        
+        # Extract last token activations
+        acts = extract_last_token_acts(
+            batch_out['blocks.19.hook_resid_post.hook_sae_acts_post'], 
+            batch_mask
+        )
+        
+        # Process each sample in the batch
+        for sample_acts in acts:
+            # Find nonzero indices and their values
+            nonzero_mask = sample_acts != 0
+            nonzero_indices = nonzero_mask.nonzero().squeeze(-1)
+            nonzero_values = sample_acts[nonzero_mask]
+            
+            # Convert to CPU and regular Python types for storage
+            results.append((
+                nonzero_indices.cpu().tolist(),
+                nonzero_values.cpu().tolist()
+            ))
+    
+    return results
+
+
+
+#Setup
 # %%
 if __name__ == "__main__":
     # Run simple test for the last-token extraction helper.
@@ -193,17 +243,98 @@ if __name__ == "__main__":
     df = pd.concat([data, neg_data])
     
     # Load SAE and the model.
+    print('Load SAE')
     sae, cfg_dict, sparsity = SAE.from_pretrained(
         release="gemma-scope-2b-pt-res-canonical",
         sae_id="layer_19/width_16k/canonical",
         device="cuda"
     )
+    print('Load Model')
     model2b = HookedSAETransformer.from_pretrained("gemma-2-2b", device='cuda')
     
     # Tokenize the entire dataset at once.
     print("Tokenizing entire dataset...")
     tokenized_all = tokenize_data(df, model2b.tokenizer)
+    label_columns = ['label', 'has_alice', 'has_not',
+                     'has_alice xor has_not', 'has_alice xor label', 'has_not xor label']
     
+    features_possibilities = ['sae_input', 'sae_recons', 'sae_diff']
+
+        # Directory to save trained probes.
+    probe_save_dir = "trained_probes"
+    os.makedirs(probe_save_dir, exist_ok=True)
+    
+
+# %%
+if __name__ == "__main__":
+    #Code for SAE reconstruction analysis
+    #This is early because I'm scared that tokenized_all will get scrambled somehow below.
+
+    active_latent_list = record_active_latents(tokenized_all, model = model2b, sae = sae)
+    tot_lats = set()
+    for latent_and_acts in active_latent_list:
+        for latent in latent_and_acts[0]:
+            tot_lats.add(latent)
+    df_w_latent_data = df.copy()
+    df_w_latent_data['active_latents'] = [l[0] for l in active_latent_list]
+    print(len(tot_lats))
+    lat_list = list(tot_lats)
+    lat_list.sort()
+    out_dirs = sae.W_dec[lat_list,:]
+    # Initialize list to store results
+    cos_sim_results = []
+    
+    # Load each probe from the first 20 seeds
+    for seed in range(20):
+        for feature_type in features_possibilities:
+            for label_col in label_columns:
+                safe_label = label_col.replace(' ', '_')
+                model_filename = f"probe_{feature_type}_{safe_label}_seed_{seed}.pt"
+                filepath = os.path.join(probe_save_dir, model_filename)
+                
+                if os.path.exists(filepath):
+                    # Load probe
+                    probe = Probe(activation_dim=2304).to('cuda')  # 2304 is the model dimension
+                    probe.load_state_dict(t.load(filepath, map_location='cuda'))
+                    
+                    # Get probe weights and normalize them
+                    probe_weights = probe.net.weight.view(-1)
+                    probe_weights_norm = F.normalize(probe_weights, dim=0)
+                    
+                    # Calculate cosine similarities with all output directions
+                    # Normalize output directions
+                    out_dirs_norm = F.normalize(t.tensor(out_dirs), dim=1)
+                    
+                    # Compute all cosine similarities at once
+                    similarities = F.linear(out_dirs_norm, probe_weights_norm.unsqueeze(0)).squeeze()
+                    
+                    # Create result dictionary
+                    result = {
+                        'seed': seed,
+                        'feature_type': feature_type,
+                        'label': label_col,
+                    }
+                    # Add similarities for each latent
+                    for i, sim in enumerate(similarities):
+                        result[f'latent_{lat_list[i]}'] = sim.item()
+                    
+                    cos_sim_results.append(result)
+                else:
+                    warn(f"Probe file {filepath} does not exist.")
+    
+    # Create DataFrame
+    cos_sim_df = pd.DataFrame(cos_sim_results)
+    
+    # Save results
+    cos_sim_df.to_csv("probe_latent_similarities.csv", index=False)
+    print("Cosine similarities computed and saved!")
+
+
+    
+
+#%%
+if __name__ == "__main__":
+    #Code to run the probing pipeline
     # Generate features for the entire dataset.
     print("Generating features for entire dataset...")
     feats_all_input, feats_all_recons, feats_all_diff = generate_probing_features(
@@ -217,13 +348,9 @@ if __name__ == "__main__":
         "sae_diff": feats_all_diff
     }
     
-    label_columns = ['label', 'has_alice', 'has_not',
-                     'has_alice xor has_not', 'has_alice xor label', 'has_not xor label']
     
-    # Directory to save trained probes.
-    probe_save_dir = "trained_probes"
-    os.makedirs(probe_save_dir, exist_ok=True)
     
+
     results = []
     n = df.shape[0]
     train_size = int(0.8 * n)  # 80% for training
@@ -334,6 +461,8 @@ if __name__ == "__main__":
                     state_dict = t.load(filepath, map_location='cpu')
                     dummy_probe.load_state_dict(state_dict)
                     weight_vectors.append(dummy_probe.net.weight.view(-1))
+                else:
+                    warn(f"Probe file {filepath} does not exist.")
             
             # Compute pairwise cosine similarities among these weight vectors.
             sims = []
@@ -359,4 +488,5 @@ if __name__ == "__main__":
     print("\nProbe Similarities across saved probes:")
     print(similarities_df.to_string(index=False))
     similarities_df.to_csv("probe_similarities.csv", index=False)
-# %%
+
+
