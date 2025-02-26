@@ -234,13 +234,11 @@ def record_active_latents(tokenized, model, sae, batch_size=8, device='cuda'):
 # %%
 if __name__ == "__main__":
     # Run simple test for the last-token extraction helper.
-    device = t.device('cuda:2')
+    device = t.device('cuda:0')
     test_last_token_extraction()
     
     # Read datasets and combine them.
-    data = pd.read_csv("cities_alice.csv")
-    neg_data = pd.read_csv("neg_cities_alice.csv")
-    df = pd.concat([data, neg_data])
+    df = pd.read_csv("all_cities.csv")
     
     # Load SAE and the model.
     print('Load SAE')
@@ -376,7 +374,7 @@ if __name__ == "__main__":
     print("\nFinal Evaluation Results:")
     print(results_df.to_string(index=False))
     results_df.to_csv("probe_results_truth.csv", index=False)
-    
+
 # %%
 if __name__ == "__main__":
     ###########################################################################
@@ -430,7 +428,7 @@ if __name__ == "__main__":
 #Probe steering results:
 
 
-
+#Ok I want to write a new function, generate steering results. This function would look similar to generate probing features. For now, here are the differences:
 
 
 
