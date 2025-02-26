@@ -528,6 +528,43 @@ if __name__ == "__main__":
         results_csv="probe_results_truth_second_last.csv",
         similarities_csv="probe_similarities_truth_second_last.csv"
     )
+# %%
+#Run probe on headline front page
+
+if __name__ == "__main__":
+    hl_frontp = pd.read_csv('headline_frontpage_sample.csv')
+    hl_frontp_tokenized = tokenize_data(hl_frontp, model2b.tokenizer, 'prompt')
+
+    feats_hl_input, feats_hl_recons, feats_hl_diff = generate_probing_features(
+        hl_frontp_tokenized, model2b, sae, batch_size=8, device=device, offset=1
+    )
+
+    features_map_hl = {
+        "sae_input": feats_hl_input,
+        "sae_recons": feats_hl_recons,
+        "sae_diff": feats_hl_diff
+    }
+    
+    # Run the probing pipeline
+    results_df_hl, similarities_df_hl = run_probing_pipeline(
+        df=hl_frontp,
+        tokenized_all=hl_frontp_tokenized,
+        model=model2b,
+        sae=sae,
+        device=device,
+        label_columns=['target'],
+        features_map=features_map_hl,
+        n_seeds=50,
+        save_probes_count=0,
+        probe_save_dir="trained_probes_truth_hl",
+        results_csv="probe_results_hl_frontp.csv",
+        similarities_csv="probe_similarities_hl_frontp.csv"
+    )
+    
+    
+
+
+
 
 # %%
 if __name__ == "__main__":
