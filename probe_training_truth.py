@@ -43,34 +43,59 @@ def tokenize_data(df, tokenizer, text_column="statement"):
 ###############################################################################
 # Last Token Extraction Helpers
 ###############################################################################
-def get_last_token_indices(attention_mask):
+def get_last_token_indices(attention_mask, offset=1):
     """
     Given an attention mask of shape (batch, seq_len) where valid tokens are 1
-    and padded tokens are 0, compute the index of the last token for each sample.
+    and padded tokens are 0, compute the index of the token `offset` positions from the end.
+    
+    Args:
+        attention_mask: Tensor of shape (batch, seq_len) with 1s for valid tokens and 0s for padding
+        offset: Position from the end (1 for last token, 2 for second-to-last, etc.)
+    
+    Returns:
+        Tensor of indices for the specified token position
     """
     token_counts = attention_mask.sum(dim=1)
-    last_indices = token_counts - 1
-    return last_indices
+    indices = token_counts - offset
+    # Make sure we don't go below 0 (if a sequence is too short)
+    indices = t.clamp(indices, min=0)
+    return indices
 
-def extract_last_token_acts(act_tensor, attention_mask):
+def extract_last_token_acts(act_tensor, attention_mask, offset=1):
     """
     Given a tensor of activations [batch, seq_len, dim] and the corresponding
-    attention mask, select for each sample the activation at the last token.
+    attention mask, select for each sample the activation at the specified token position.
+    
+    Args:
+        act_tensor: Activation tensor of shape (batch, seq_len, dim)
+        attention_mask: Tensor of shape (batch, seq_len) with 1s for valid tokens and 0s for padding
+        offset: Position from the end (1 for last token, 2 for second-to-last, etc.)
+    
+    Returns:
+        Tensor of activations at the specified position
     """
-    last_indices = get_last_token_indices(attention_mask)
+    indices = get_last_token_indices(attention_mask, offset)
     batch_indices = t.arange(act_tensor.size(0), device=act_tensor.device)
-    last_activations = act_tensor[batch_indices, last_indices, :]
-    return last_activations
+    activations = act_tensor[batch_indices, indices, :]
+    return activations
 
 ###############################################################################
 # Feature Generation
 ###############################################################################
-def generate_probing_features(tokenized, model, sae, batch_size=8, device='cuda'):
+def generate_probing_features(tokenized, model, sae, batch_size=8, device='cuda', offset=1):
     """
     Runs the model (with run_with_cache_with_saes) in batches on the tokenized input.
     For each batch it extracts the three features:
       - hook_sae_input, hook_sae_recons, and (sae_input - sae_recons)
-    with the extraction done only at the last valid token.
+    with the extraction done only at the specified token position.
+    
+    Args:
+        tokenized: Tokenized input
+        model: The model to run
+        sae: The sparse autoencoder
+        batch_size: Batch size for processing
+        device: Device to use for computation
+        offset: Position from the end (1 for last token, 2 for second-to-last, etc.)
     """
     input_ids = tokenized["input_ids"].to(device)
     attention_mask = tokenized["attention_mask"].to(device)
@@ -89,8 +114,8 @@ def generate_probing_features(tokenized, model, sae, batch_size=8, device='cuda'
                 'blocks.19.hook_resid_post.hook_sae_recons'
             ]
         )[1]
-        act_input = extract_last_token_acts(batch_out['blocks.19.hook_resid_post.hook_sae_input'], batch_mask)
-        act_recons = extract_last_token_acts(batch_out['blocks.19.hook_resid_post.hook_sae_recons'], batch_mask)
+        act_input = extract_last_token_acts(batch_out['blocks.19.hook_resid_post.hook_sae_input'], batch_mask, offset)
+        act_recons = extract_last_token_acts(batch_out['blocks.19.hook_resid_post.hook_sae_recons'], batch_mask, offset)
         act_diff = act_input - act_recons
 
         all_feats_input.append(act_input.detach().cpu())
@@ -183,10 +208,18 @@ def test_last_token_extraction():
 
 # Get active latents and their activations
 
-def record_active_latents(tokenized, model, sae, batch_size=8, device='cuda'):
+def record_active_latents(tokenized, model, sae, batch_size=8, device='cuda', offset=1):
     """
-    Runs the model in batches and records which latents are active (nonzero) at the last token,
+    Runs the model in batches and records which latents are active (nonzero) at the specified token position,
     along with their activation values.
+    
+    Args:
+        tokenized: Tokenized input
+        model: The model to run
+        sae: The sparse autoencoder
+        batch_size: Batch size for processing
+        device: Device to use for computation
+        offset: Position from the end (1 for last token, 2 for second-to-last, etc.)
     
     Returns:
     - List of tuples (nonzero_indices, activation_values) for each input sample
@@ -207,10 +240,11 @@ def record_active_latents(tokenized, model, sae, batch_size=8, device='cuda'):
             names_filter=lambda name: name in ['blocks.19.hook_resid_post.hook_sae_acts_post']
         )[1]
         
-        # Extract last token activations
+        # Extract specified token activations
         acts = extract_last_token_acts(
             batch_out['blocks.19.hook_resid_post.hook_sae_acts_post'], 
-            batch_mask
+            batch_mask,
+            offset
         )
         
         # Process each sample in the batch
@@ -228,6 +262,169 @@ def record_active_latents(tokenized, model, sae, batch_size=8, device='cuda'):
     
     return results
 
+
+# %%
+
+def run_probing_pipeline(df, tokenized_all, model, sae, device, 
+                        label_columns, features_map,
+                        n_seeds=50, save_probes_count=20, 
+                        probe_save_dir="trained_probes", 
+                        results_csv="probe_results.csv",
+                        similarities_csv="probe_similarities.csv"):
+    """
+    Runs the complete probing pipeline: training probes, evaluating them,
+    and computing similarities between probe weight vectors.
+    
+    Args:
+        df: DataFrame with the dataset
+        tokenized_all: Tokenized input data
+        model: The model to use
+        sae: The sparse autoencoder
+        device: Device to use for computation
+        label_columns: List of columns to use as labels
+        features_map: Dictionary mapping feature types to feature tensors
+        n_seeds: Number of seeds to train for
+        save_probes_count: Number of seeds for which to save probes
+        probe_save_dir: Directory to save trained probes
+        results_csv: Filename for the results CSV
+        similarities_csv: Filename for the similarities CSV
+    """
+    os.makedirs(probe_save_dir, exist_ok=True)
+    
+    results = []
+    n = df.shape[0]
+    train_size = int(0.8 * n)  # 80% for training
+    
+    for seed in range(n_seeds):
+        print(f"\nStarting training loop with seed {seed}...")
+        start_time = time.time()
+        
+        # Compute a train/test split for the entire dataset using this seed
+        np.random.seed(seed)
+        indices = np.random.permutation(n)
+        train_indices = indices[:train_size]
+        test_indices = indices[train_size:]
+        
+        # Loop over each label
+        for label_col in label_columns:
+            # Prepare the labels (same for all feature types)
+            labels_all = t.tensor(df[label_col].values)
+            train_labels = labels_all[train_indices]
+            test_labels = labels_all[test_indices]
+            
+            # Dictionary to hold the probes for the three feature types for cosine similarity computation
+            probes_for_label = {}
+            # Temporary storage for the per-probe results for this seed & label
+            temp_results = {}
+            
+            # Train a probe for each feature type
+            for feature_type, feats_all in features_map.items():
+                train_feats = feats_all[train_indices]
+                test_feats = feats_all[test_indices]
+                
+                # Set the torch seed to ensure probe initialization consistency
+                t.manual_seed(seed)
+                probe, _ = train_probe_model(
+                    train_feats, train_labels, dim=train_feats.size(1),
+                    epochs=2, batch_size=8, device=device, lr=0.005
+                )
+                train_loss, train_acc = evaluate_probe_full(probe, train_feats, train_labels, device=device)
+                test_loss, test_acc = evaluate_probe_full(probe, test_feats, test_labels, device=device)
+                weight_norm = probe.net.weight.norm().item()
+                
+                probes_for_label[feature_type] = probe
+                temp_results[feature_type] = {
+                    "Seed": seed,
+                    "Feature Type": feature_type,
+                    "Label": label_col,
+                    "Train Loss": train_loss,
+                    "Train Accuracy": train_acc,
+                    "Test Loss": test_loss,
+                    "Test Accuracy": test_acc,
+                    "Weight Norm": weight_norm
+                }
+                
+                # Save the probe if this seed is among the first N
+                if seed < save_probes_count:
+                    safe_label = label_col.replace(' ', '_')
+                    model_filename = f"probe_{feature_type}_{safe_label}_seed_{seed}.pt"
+                    t.save(probe.state_dict(), os.path.join(probe_save_dir, model_filename))
+            
+            # Compute cosine similarities between the weight vectors for the three probes
+            # Extract the weight vectors (flattening them)
+            w_input = probes_for_label["sae_input"].net.weight.view(-1)
+            w_recons = probes_for_label["sae_recons"].net.weight.view(-1)
+            w_diff = probes_for_label["sae_diff"].net.weight.view(-1)
+            
+            cos_sim_input_recons = F.cosine_similarity(w_input, w_recons, dim=0).item()
+            cos_sim_input_diff = F.cosine_similarity(w_input, w_diff, dim=0).item()
+            cos_sim_recons_diff = F.cosine_similarity(w_recons, w_diff, dim=0).item()
+            
+            # Add the cosine similarity metrics to each probe's result
+            for feature_type in features_map.keys():
+                temp_results[feature_type]["Cosine Sim Input-Recons"] = cos_sim_input_recons
+                temp_results[feature_type]["Cosine Sim Input-Diff"] = cos_sim_input_diff
+                temp_results[feature_type]["Cosine Sim Recons-Diff"] = cos_sim_recons_diff
+                
+                # Append the result to the main results list
+                results.append(temp_results[feature_type])
+            
+            t.cuda.empty_cache()
+        
+        loop_duration = time.time() - start_time
+        print(f"Training loop with seed {seed} completed in {loop_duration:.2f} seconds.")
+    
+    # Create a results table and print it
+    results_df = pd.DataFrame(results)
+    print("\nFinal Evaluation Results:")
+    print(results_df.to_string(index=False))
+    results_df.to_csv(results_csv, index=False)
+    
+    # Compute average cosine similarities across saved probes
+    similarity_results = []
+    # For each combination of feature type and label, load the saved probes from the first N seeds
+    for label_col in label_columns:
+        safe_label = label_col.replace(' ', '_')
+        for feature_type in features_map.keys():
+            weight_vectors = []
+            for seed in range(save_probes_count):
+                model_filename = f"probe_{feature_type}_{safe_label}_seed_{seed}.pt"
+                filepath = os.path.join(probe_save_dir, model_filename)
+                if os.path.exists(filepath):
+                    # Initialize a probe and load its state dict
+                    dummy_probe = Probe(activation_dim=features_map[feature_type].size(1)).to('cpu')
+                    state_dict = t.load(filepath, map_location='cpu')
+                    dummy_probe.load_state_dict(state_dict)
+                    weight_vectors.append(dummy_probe.net.weight.view(-1))
+                else:
+                    warn(f"Probe file {filepath} does not exist.")
+            
+            # Compute pairwise cosine similarities among these weight vectors
+            sims = []
+            num = len(weight_vectors)
+            for i in range(num):
+                for j in range(i+1, num):
+                    sim = F.cosine_similarity(weight_vectors[i], weight_vectors[j], dim=0).item()
+                    sims.append(sim)
+            if sims:
+                avg_sim = np.mean(sims)
+                std_sim = np.std(sims)
+            else:
+                avg_sim = None
+                std_sim = None
+            similarity_results.append({
+                "Feature Type": feature_type,
+                "Label": label_col,
+                "Average Cosine Similarity": avg_sim,
+                "Cosine Similarity Std": std_sim
+            })
+    
+    similarities_df = pd.DataFrame(similarity_results)
+    print("\nProbe Similarities across saved probes:")
+    print(similarities_df.to_string(index=False))
+    similarities_df.to_csv(similarities_csv, index=False)
+    
+    return results_df, similarities_df
 
 
 #Setup
@@ -265,8 +462,109 @@ if __name__ == "__main__":
     
 
 # %%
-
+if __name__ == "__main__":
+    # Run the original probing pipeline on last token (offset=1)
+    print("Running probing pipeline on LAST tokens...")
     
+    # Generate features for the entire dataset
+    print("Generating features for entire dataset (last token)...")
+    feats_all_input, feats_all_recons, feats_all_diff = generate_probing_features(
+        tokenized_all, model2b, sae, batch_size=8, device=device, offset=1
+    )
+    
+    # Map each feature type to its corresponding feature tensor
+    features_map_last = {
+        "sae_input": feats_all_input,
+        "sae_recons": feats_all_recons,
+        "sae_diff": feats_all_diff
+    }
+    
+    # Run the probing pipeline
+    results_df_last, similarities_df_last = run_probing_pipeline(
+        df=df,
+        tokenized_all=tokenized_all,
+        model=model2b,
+        sae=sae,
+        device=device,
+        label_columns=label_columns,
+        features_map=features_map_last,
+        n_seeds=50,
+        save_probes_count=20,
+        probe_save_dir="trained_probes_truth_last",
+        results_csv="probe_results_truth_last.csv",
+        similarities_csv="probe_similarities_truth_last.csv"
+    )
+
+# %%
+if __name__ == "__main__":
+    # Run the probing pipeline on second-to-last tokens (offset=2)
+    print("Running probing pipeline on SECOND-TO-LAST tokens...")
+    
+    # Generate features for the entire dataset using second-to-last tokens
+    print("Generating features for entire dataset (second-to-last token)...")
+    feats_all_input_2nd, feats_all_recons_2nd, feats_all_diff_2nd = generate_probing_features(
+        tokenized_all, model2b, sae, batch_size=8, device=device, offset=2
+    )
+    
+    # Map each feature type to its corresponding feature tensor
+    features_map_2nd = {
+        "sae_input": feats_all_input_2nd,
+        "sae_recons": feats_all_recons_2nd,
+        "sae_diff": feats_all_diff_2nd
+    }
+    
+    # Run the probing pipeline
+    results_df_2nd, similarities_df_2nd = run_probing_pipeline(
+        df=df,
+        tokenized_all=tokenized_all,
+        model=model2b,
+        sae=sae,
+        device=device,
+        label_columns=label_columns,
+        features_map=features_map_2nd,
+        n_seeds=50,
+        save_probes_count=0,
+        probe_save_dir="trained_probes_truth_second_last",
+        results_csv="probe_results_truth_second_last.csv",
+        similarities_csv="probe_similarities_truth_second_last.csv"
+    )
+
+# %%
+if __name__ == "__main__":
+    # Compare results between last token and second-to-last token
+    print("\nComparison of average test accuracies:")
+    
+    # Compute average test accuracies for each feature type and token position
+    avg_acc_last = results_df_last.groupby(['Feature Type', 'Label'])['Test Accuracy'].mean().reset_index()
+    avg_acc_2nd = results_df_2nd.groupby(['Feature Type', 'Label'])['Test Accuracy'].mean().reset_index()
+    
+    # Rename for clarity
+    avg_acc_last['Token Position'] = 'Last'
+    avg_acc_2nd['Token Position'] = 'Second-to-last'
+    
+    # Combine the results
+    comparison = pd.concat([avg_acc_last, avg_acc_2nd])
+    
+    # Display the comparison
+    print(comparison.pivot_table(
+        index=['Feature Type', 'Label'], 
+        columns='Token Position', 
+        values='Test Accuracy'
+    ).reset_index())
+    
+    # Save the comparison
+    comparison.to_csv("token_position_comparison.csv", index=False)
+
+
+
+
+##### Old code
+
+# %%
+
+
+
+
 
 #%%
 if __name__ == "__main__":
@@ -495,4 +793,3 @@ if __name__ == "__main__":
     # Save results
     cos_sim_df.to_csv("probe_latent_similarities.csv", index=False)
     print("Cosine similarities computed and saved!")
-
