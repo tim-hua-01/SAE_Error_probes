@@ -529,6 +529,40 @@ if __name__ == "__main__":
         similarities_csv="probe_similarities_truth_second_last.csv"
     )
 # %%
+#Run probe on twitter happiness
+
+if __name__ == "__main__":
+    tw_happiness = pd.read_csv('149_twt_emotion_happiness.csv')
+    tw_happiness_tokenized = tokenize_data(tw_happiness, model2b.tokenizer, 'prompt')
+
+    feats_tw_input, feats_tw_recons, feats_tw_diff = generate_probing_features(
+        tw_happiness_tokenized, model2b, sae, batch_size=8, device=device, offset=1
+    )
+
+    features_map_tw = {
+        "sae_input": feats_tw_input,
+        "sae_recons": feats_tw_recons,
+        "sae_diff": feats_tw_diff
+    }
+    
+    # Run the probing pipeline
+    results_df_tw, similarities_df_tw = run_probing_pipeline(
+        df=tw_happiness,
+        tokenized_all=tw_happiness_tokenized,
+        model=model2b,
+        sae=sae,
+        device=device,
+        label_columns=['target'],
+        features_map=features_map_tw,
+        n_seeds=50,
+        save_probes_count=0,
+        probe_save_dir="trained_probes_truth_tw",
+        results_csv="probe_results_tw_happiness.csv",
+        similarities_csv="probe_similarities_tw_happiness.csv"
+    )
+    results_df_tw.groupby(['Feature Type', 'Label'])['Test Accuracy'].mean().reset_index()
+    
+# %%
 #Run probe on headline front page
 
 if __name__ == "__main__":
@@ -560,11 +594,75 @@ if __name__ == "__main__":
         results_csv="probe_results_hl_frontp.csv",
         similarities_csv="probe_similarities_hl_frontp.csv"
     )
+
+# %%
+#Run probe on if the borough is manhattan
+
+if __name__ == "__main__":
+    manhattan = pd.read_csv('114_nyc_borough_Manhattan.csv')
+    manhattan_tokenized = tokenize_data(manhattan, model2b.tokenizer, 'prompt')
+
+    feats_man_input, feats_man_recons, feats_man_diff = generate_probing_features(
+        manhattan_tokenized, model2b, sae, batch_size=8, device=device, offset=1
+    )
+
+    features_map_man = {
+        "sae_input": feats_man_input,
+        "sae_recons": feats_man_recons,
+        "sae_diff": feats_man_diff
+    }
     
+    # Run the probing pipeline
+    results_df_man, similarities_df_man = run_probing_pipeline(
+        df=manhattan,
+        tokenized_all=manhattan_tokenized,
+        model=model2b,
+        sae=sae,
+        device=device,
+        label_columns=['target'],
+        features_map=features_map_man,
+        n_seeds=50,
+        save_probes_count=0,
+        probe_save_dir="trained_probes_truth_man",
+        results_csv="probe_results_man_borough.csv",
+        similarities_csv="probe_similarities_man_borough.csv"
+    )
+    results_df_man.groupby(['Feature Type', 'Label'])['Test Accuracy', 'Test Loss'].mean().reset_index()
+
+# %%
+# run probe on athlete sport basketball 155_athlete_sport_basketball.csv
+
+if __name__ == "__main__":
+    athlete_sport = pd.read_csv('155_athlete_sport_basketball.csv')
+    athlete_sport_tokenized = tokenize_data(athlete_sport, model2b.tokenizer, 'prompt')
     
+    feats_ath_input, feats_ath_recons, feats_ath_diff = generate_probing_features(
+        athlete_sport_tokenized, model2b, sae, batch_size=8, device=device, offset=1
+    )
 
-
-
+    features_map_ath = {
+        "sae_input": feats_ath_input,
+        "sae_recons": feats_ath_recons,
+        "sae_diff": feats_ath_diff
+    }
+    
+    # Run the probing pipeline
+    results_df_ath, similarities_df_ath = run_probing_pipeline(
+        df=athlete_sport,
+        tokenized_all=athlete_sport_tokenized,
+        model=model2b,
+        sae=sae,
+        device=device,
+        label_columns=['target'],
+        features_map=features_map_ath,
+        n_seeds=50,
+        save_probes_count=0,
+        probe_save_dir="trained_probes_truth_ath",
+        results_csv="probe_results_ath_sport.csv",
+        similarities_csv="probe_similarities_ath_sport.csv"
+    )
+    results_df_ath.groupby(['Feature Type', 'Label'])['Test Loss'].mean().reset_index()
+    
 
 # %%
 if __name__ == "__main__":
