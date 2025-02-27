@@ -17,6 +17,7 @@ import time  # For timing the training loops
 from functools import partial
 from torch import Tensor
 from transformer_lens.patching import get_act_patch_resid_pre,make_df_from_ranges, generic_activation_patch, layer_pos_patch_setter
+from huggingface_hub import login
 
 import plotly.express as px
 update_layout_set = {"xaxis_range", "yaxis_range", "yaxis2_range", "hovermode", "xaxis_title", "yaxis_title", "colorbar", "colorscale", "coloraxis", "title_x", "bargap", "bargroupgap", "xaxis_tickformat", "yaxis_tickformat", "title_y", "legend_title_text", "xaxis_showgrid", "xaxis_gridwidth", "xaxis_gridcolor", "yaxis_showgrid", "yaxis_gridwidth", "yaxis_gridcolor", "showlegend", "xaxis_tickmode", "yaxis_tickmode", "margin", "xaxis_visible", "yaxis_visible", "bargap", "bargroupgap", "xaxis_tickangle"}
@@ -489,7 +490,7 @@ if __name__ == "__main__":
     print("Setting up the probing pipeline")
     device = t.device('cuda:0')
     test_last_token_extraction()
-    
+    login()
     # Read datasets and combine them.
     df = pd.read_csv("all_cities.csv")
     
@@ -1138,7 +1139,8 @@ if __name__ == "__main__":
     print(t.topk(F.softmax(clean_logits[0,-1]), k = 10))
     true_token_id = model2b.tokenizer.encode(" True")[1]  # Note the space before "True"
     false_token_id = model2b.tokenizer.encode(" False")[1]  # Note the space before "False"
-
+    #Don't need to patch again for different layers
+    """
     def patching_metric(logits):
         return logits[0, -1, true_token_id] - logits[0, -1, false_token_id]
     
@@ -1150,7 +1152,7 @@ if __name__ == "__main__":
         patching_metric = patching_metric,
     )
     t.save(patch_results, "patch_results.pt")
-    t.cuda.empty_cache()
+    
     import sys
     is_interactive = hasattr(sys, 'ps1') or 'ipykernel' in sys.modules
     
@@ -1163,6 +1165,8 @@ if __name__ == "__main__":
         )
     else:
         print('No patching visualization in non-interactive mode')
+    """
+    t.cuda.empty_cache()
     gc.collect()
 
 
