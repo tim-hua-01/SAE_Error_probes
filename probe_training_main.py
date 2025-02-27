@@ -15,6 +15,58 @@ from warnings import warn
 import os
 import time  # For timing the training loops
 from functools import partial
+from torch import Tensor
+
+import plotly.express as px
+update_layout_set = {"xaxis_range", "yaxis_range", "yaxis2_range", "hovermode", "xaxis_title", "yaxis_title", "colorbar", "colorscale", "coloraxis", "title_x", "bargap", "bargroupgap", "xaxis_tickformat", "yaxis_tickformat", "title_y", "legend_title_text", "xaxis_showgrid", "xaxis_gridwidth", "xaxis_gridcolor", "yaxis_showgrid", "yaxis_gridwidth", "yaxis_gridcolor", "showlegend", "xaxis_tickmode", "yaxis_tickmode", "margin", "xaxis_visible", "yaxis_visible", "bargap", "bargroupgap", "xaxis_tickangle"}
+def to_numpy(tensor):
+    """
+    Helper function to convert a tensor to a numpy array. Also works on lists, tuples, and numpy arrays.
+    """
+    if isinstance(tensor, np.ndarray):
+        return tensor
+    elif isinstance(tensor, (list, tuple)):
+        array = np.array(tensor)
+        return array
+    elif isinstance(tensor, (Tensor, t.nn.parameter.Parameter)):
+        return tensor.detach().cpu().numpy()
+    elif isinstance(tensor, (int, float, bool, str)):
+        return np.array(tensor)
+    else:
+        raise ValueError(f"Input to to_numpy has invalid type: {type(tensor)}")
+def reorder_list_in_plotly_way(L: list, col_wrap: int):
+    '''
+    Helper function, because Plotly orders figures in an annoying way when there's column wrap.
+    '''
+    L_new = []
+    while len(L) > 0:
+        L_new.extend(L[-col_wrap:])
+        L = L[:-col_wrap]
+    return L_new
+
+
+def imshow(tensor, renderer=None, **kwargs):
+    kwargs_post = {k: v for k, v in kwargs.items() if k in update_layout_set}
+    kwargs_pre = {k: v for k, v in kwargs.items() if k not in update_layout_set}
+    if "facet_labels" in kwargs_pre:
+        facet_labels = kwargs_pre.pop("facet_labels")
+    else:
+        facet_labels = None
+    if "color_continuous_scale" not in kwargs_pre:
+        kwargs_pre["color_continuous_scale"] = "RdBu"
+    if "color_continuous_midpoint" not in kwargs_pre:
+        kwargs_pre["color_continuous_midpoint"] = 0.0
+    if "margin" in kwargs_post and isinstance(kwargs_post["margin"], int):
+        kwargs_post["margin"] = dict.fromkeys(list("tblr"), kwargs_post["margin"])
+    fig = px.imshow(to_numpy(tensor), **kwargs_pre).update_layout(**kwargs_post)
+    if facet_labels:
+        # Weird thing where facet col wrap means labels are in wrong order
+        if "facet_col_wrap" in kwargs_pre:
+            facet_labels = reorder_list_in_plotly_way(facet_labels, kwargs_pre["facet_col_wrap"])
+        for i, label in enumerate(facet_labels):
+            fig.layout.annotations[i]['text'] = label
+    fig.show(renderer=renderer)
+
 
 ###############################################################################
 # Probe Definition
@@ -1007,6 +1059,45 @@ def compute_residual_probe_dot_products(
     
     return results_df
 
+# %%
+#Patching to localize information
+if __name__ == "__main__":
+    from transformer_lens.patching import get_act_patch_resid_pre
+
+    clean_input = """The city of Oakland is not in the United States. This statement is: False
+    The city of Canberra is in Australia. This statement is: True
+    The city of Seattle is in the United States. This statement is:"""
+
+    corrupted_input = """The city of Oakland is not in the United States. This statement is: False
+    The city of Canberra is in Australia. This statement is: True
+    The city of London is in the United States. This statement is:"""
+
+    clean_tokens = model2b.tokenizer.encode(clean_input, return_tensors='pt').to(device)
+    corrupted_tokens = model2b.tokenizer.encode(corrupted_input, return_tensors='pt').to(device)
+    _, clean_cache = model2b.run_with_cache(clean_tokens)
+    true_token_id = model2b.tokenizer.encode(" True")[1]  # Note the space before "True"
+    false_token_id = model2b.tokenizer.encode(" False")[1]  # Note the space before "False"
+
+    def patching_metric(logits):
+        return logits[0, -1, true_token_id] - logits[0, -1, false_token_id]
+    
+    patch_results = get_act_patch_resid_pre(
+    model= model2b,
+    corrupted_tokens = corrupted_tokens,
+    clean_cache = clean_cache,
+    patching_metric = patching_metric
+)
+    t.save(patch_results, "patch_results.pt")
+
+#%%
+if __name__ == "__main__":
+    imshow(
+    patch_results,
+    labels={"x": "Token Position", "y": "Layer"},
+    title="Patching results for the truthfulness information",
+    width=1000
+)
+
 #%%
 #Generate probes for the two shot prompted data
 if __name__ == "__main__":
@@ -1097,8 +1188,7 @@ if __name__ == "__main__":
     scaling_range = [-20,-10,-8,-5.0, 5.0, 8, 10, 20]
     
     # Get token IDs for "True" and "False"
-    true_token_id = model2b.tokenizer.encode(" True")[1]  # Note the space before "True"
-    false_token_id = model2b.tokenizer.encode(" False")[1]  # Note the space before "False"
+      # Note the space before "False"
     np.random.seed(32)
     df_sample = df.sample(320)
     sample_tokenized = tokenize_data(df_sample, model2b.tokenizer, 'twoshot_prompt')
