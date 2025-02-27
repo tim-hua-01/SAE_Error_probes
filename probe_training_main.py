@@ -666,149 +666,6 @@ if __name__ == "__main__":
     results_df_ath.groupby(['Feature Type', 'Label'])['Test Loss'].mean().reset_index()
     
 
-# %%
-if __name__ == "__main__":
-    # Compare results between last token and second-to-last token
-    print("\nComparison of average test accuracies:")
-    
-    # Compute average test accuracies for each feature type and token position
-    avg_acc_last = results_df_last.groupby(['Feature Type', 'Label'])['Test Accuracy'].mean().reset_index()
-    avg_acc_2nd = results_df_2nd.groupby(['Feature Type', 'Label'])['Test Accuracy'].mean().reset_index()
-    
-    # Rename for clarity
-    avg_acc_last['Token Position'] = 'Last'
-    avg_acc_2nd['Token Position'] = 'Second-to-last'
-    
-    # Combine the results
-    comparison = pd.concat([avg_acc_last, avg_acc_2nd])
-    
-    # Display the comparison
-    print(comparison.pivot_table(
-        index=['Feature Type', 'Label'], 
-        columns='Token Position', 
-        values='Test Accuracy'
-    ).reset_index())
-    
-    # Save the comparison
-    comparison.to_csv("token_position_comparison.csv", index=False)
-
-
-
-
-##### Old code
-
-# %%
-
-
-
-
-
-#%%
-if __name__ == "__main__":
-    #Code to run the probing pipeline
-    # Generate features for the entire dataset.
-    print("Generating features for entire dataset...")
-    feats_all_input, feats_all_recons, feats_all_diff = generate_probing_features(
-        tokenized_all, model2b, sae, batch_size=8, device=device
-    )
-    
-    # Map each feature type to its corresponding feature tensor.
-    features_map = {
-        "sae_input": feats_all_input,
-        "sae_recons": feats_all_recons,
-        "sae_diff": feats_all_diff
-    }
-    
-    
-    results = []
-    n = df.shape[0]
-    train_size = int(0.8 * n)  # 80% for training
-    
-    N_SEEDS = 50
-    for seed in range(N_SEEDS):
-        print(f"\nStarting training loop with seed {seed}...")
-        start_time = time.time()
-        
-        # Compute a train/test split for the entire dataset using this seed.
-        np.random.seed(seed)
-        indices = np.random.permutation(n)
-        train_indices = indices[:train_size]
-        test_indices = indices[train_size:]
-        
-        # Loop over each label.
-        for label_col in label_columns:
-            # Prepare the labels (same for all feature types).
-            labels_all = t.tensor(df[label_col].values)
-            train_labels = labels_all[train_indices]
-            test_labels = labels_all[test_indices]
-            
-            # Dictionary to hold the probes for the three feature types for cosine similarity computation.
-            probes_for_label = {}
-            # Temporary storage for the per-probe results for this seed & label.
-            temp_results = {}
-            
-            # Train a probe for each feature type.
-            for feature_type, feats_all in features_map.items():
-                train_feats = feats_all[train_indices]
-                test_feats = feats_all[test_indices]
-                
-                # Set the torch seed to ensure probe initialization consistency.
-                t.manual_seed(seed)
-                probe, _ = train_probe_model(
-                    train_feats, train_labels, dim=train_feats.size(1),
-                    epochs=2, batch_size=8, device=device, lr=0.005
-                )
-                train_loss, train_acc = evaluate_probe_full(probe, train_feats, train_labels, device=device)
-                test_loss, test_acc = evaluate_probe_full(probe, test_feats, test_labels, device=device)
-                weight_norm = probe.net.weight.norm().item()
-                
-                probes_for_label[feature_type] = probe
-                temp_results[feature_type] = {
-                    "Seed": seed,
-                    "Feature Type": feature_type,
-                    "Label": label_col,
-                    "Train Loss": train_loss,
-                    "Train Accuracy": train_acc,
-                    "Test Loss": test_loss,
-                    "Test Accuracy": test_acc,
-                    "Weight Norm": weight_norm
-                }
-                
-                # Save the probe if this seed is among the first 20.
-                if seed < 20:
-                    safe_label = label_col.replace(' ', '_')
-                    model_filename = f"probe_{feature_type}_{safe_label}_seed_{seed}.pt"
-                    t.save(probe.state_dict(), os.path.join(probe_save_dir, model_filename))
-            
-            # Compute cosine similarities between the weight vectors for the three probes.
-            # Extract the weight vectors (flattening them)
-            w_input = probes_for_label["sae_input"].net.weight.view(-1)
-            w_recons = probes_for_label["sae_recons"].net.weight.view(-1)
-            w_diff = probes_for_label["sae_diff"].net.weight.view(-1)
-            
-            cos_sim_input_recons = F.cosine_similarity(w_input, w_recons, dim=0).item()
-            cos_sim_input_diff = F.cosine_similarity(w_input, w_diff, dim=0).item()
-            cos_sim_recons_diff = F.cosine_similarity(w_recons, w_diff, dim=0).item();
-            
-            # Add the cosine similarity metrics to each probe's result.
-            for feature_type in features_map.keys():
-                temp_results[feature_type]["Cosine Sim Input-Recons"] = cos_sim_input_recons
-                temp_results[feature_type]["Cosine Sim Input-Diff"] = cos_sim_input_diff
-                temp_results[feature_type]["Cosine Sim Recons-Diff"] = cos_sim_recons_diff
-                
-                # Append the result to the main results list.
-                results.append(temp_results[feature_type])
-            
-            t.cuda.empty_cache()
-        
-        loop_duration = time.time() - start_time
-        print(f"Training loop with seed {seed} completed in {loop_duration:.2f} seconds.")
-    
-    # Create a results table and print it.
-    results_df = pd.DataFrame(results)
-    print("\nFinal Evaluation Results:")
-    print(results_df.to_string(index=False))
-    results_df.to_csv("probe_results_truth.csv", index=False)
 
 
 
@@ -865,7 +722,8 @@ def generate_steering_results(
     device: str = 'cuda',
     offset: int = 1,
     output_csv: str = "steering_results.csv",
-    label_name: str = "label"
+    label_name: str = "label",
+    n_probes: int = 20
 ):
     """
     Generate steering results by applying probe weights to the model's residual stream.
@@ -897,7 +755,7 @@ def generate_steering_results(
     
     for feature_type in feature_types:
         probes_by_type[feature_type] = []
-        for seed in range(20):  # Load all 20 saved probes
+        for seed in range(n_probes):  # Load all 20 saved probes
             safe_label = label_name.replace(' ', '_')
             model_filename = f"probe_{feature_type}_{safe_label}_seed_{seed}.pt"
             filepath = os.path.join(saved_probe_dir, model_filename)
@@ -1149,13 +1007,51 @@ def compute_residual_probe_dot_products(
     
     return results_df
 
+#%%
+#Generate probes for the two shot prompted data
+if __name__ == "__main__":
+    twoshot_tokenized = tokenize_data(df, model2b.tokenizer, 'twoshot_prompt')
+    
+    feats_twoshot_input, feats_twoshot_recons, feats_twoshot_diff = generate_probing_features(
+        twoshot_tokenized, model2b, sae, batch_size=8, device=device, offset=1
+    )
+
+    features_map_twoshot = {
+        "sae_input": feats_twoshot_input,
+        "sae_recons": feats_twoshot_recons,
+        "sae_diff": feats_twoshot_diff
+    }
+    
+    # Run the probing pipeline
+    results_df_twoshot, similarities_df_twoshot = run_probing_pipeline(
+        df=df,
+        tokenized_all=twoshot_tokenized,
+        model=model2b,
+        sae=sae,
+        device=device,
+        label_columns=['label'],
+        features_map=features_map_twoshot,
+        n_seeds=50,
+        save_probes_count=25,
+        probe_save_dir="trained_probes_truth_twoshot",
+        results_csv="probe_results_twoshot.csv",
+        similarities_csv="probe_similarities_twoshot.csv"
+    )
+    results_df_twoshot.groupby(['Feature Type', 'Label'])['Test Loss'].mean().reset_index()
+
+# %%
+#Use patching to verify that the truthfulness information is there indeed
+
+
+
+
 # %%
 #Checking the dot products
 if __name__ == "__main__":
     prompted_tokenized = tokenize_data(df.sample(128), model2b.tokenizer, 'twoshot_prompt')
     # Compute dot products between residual stream and probe weights
     dot_products = compute_residual_probe_dot_products(
-        saved_probe_dir="trained_probes_truth",
+        saved_probe_dir="trained_probes_truth_twoshot",
         tokenized_text=prompted_tokenized,
         model=model2b,
         random_seed=42,
@@ -1198,7 +1094,7 @@ if __name__ == "__main__":
 #Applying steering
 if __name__ == "__main__":
     # Example usage of the steering function
-    scaling_range = [-30,-20,-10, -5.0, 5.0, 10, 20, 30]
+    scaling_range = [-20,-10,-8,-5.0, 5.0, 8, 10, 20]
     
     # Get token IDs for "True" and "False"
     true_token_id = model2b.tokenizer.encode(" True")[1]  # Note the space before "True"
@@ -1208,7 +1104,7 @@ if __name__ == "__main__":
     sample_tokenized = tokenize_data(df_sample, model2b.tokenizer, 'twoshot_prompt')
     # Generate steering results
     steering_results = generate_steering_results(
-        saved_probe_dir="trained_probes_truth",
+        saved_probe_dir="trained_probes_truth_twoshot",
         tokenized_text=sample_tokenized,
         model=model2b,
         scaling_range=scaling_range,
@@ -1219,7 +1115,8 @@ if __name__ == "__main__":
         device=device,
         offset=1,  # Last token
         output_csv="steering_results_truth.csv",
-        label_name="label"
+        label_name="label",
+        n_probes=25
     )
 
 # %%
