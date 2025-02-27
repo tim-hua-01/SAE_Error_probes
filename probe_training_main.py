@@ -16,9 +16,11 @@ import os
 import time  # For timing the training loops
 from functools import partial
 from torch import Tensor
+from transformer_lens.patching import get_act_patch_resid_pre,make_df_from_ranges, generic_activation_patch, layer_pos_patch_setter
 
 import plotly.express as px
 update_layout_set = {"xaxis_range", "yaxis_range", "yaxis2_range", "hovermode", "xaxis_title", "yaxis_title", "colorbar", "colorscale", "coloraxis", "title_x", "bargap", "bargroupgap", "xaxis_tickformat", "yaxis_tickformat", "title_y", "legend_title_text", "xaxis_showgrid", "xaxis_gridwidth", "xaxis_gridcolor", "yaxis_showgrid", "yaxis_gridwidth", "yaxis_gridcolor", "showlegend", "xaxis_tickmode", "yaxis_tickmode", "margin", "xaxis_visible", "yaxis_visible", "bargap", "bargroupgap", "xaxis_tickangle"}
+
 def to_numpy(tensor):
     """
     Helper function to convert a tensor to a numpy array. Also works on lists, tuples, and numpy arrays.
@@ -484,7 +486,6 @@ def run_probing_pipeline(df, tokenized_all, model, sae, device,
 #Setup
 # %%
 if __name__ == "__main__":
-    # Run simple test for the last-token extraction helper.
     device = t.device('cuda:0')
     test_last_token_extraction()
     
@@ -514,6 +515,8 @@ if __name__ == "__main__":
     probe_save_dir = "trained_probes_truth"
     os.makedirs(probe_save_dir, exist_ok=True)
     
+
+
 
 # %%
 if __name__ == "__main__":
@@ -1059,14 +1062,56 @@ def compute_residual_probe_dot_products(
     
     return results_df
 
+#Also some patching utilty
+
+
+def get_act_patch_specific_positions(
+    model, corrupted_tokens, clean_cache, patching_metric, 
+    activation_name="resid_pre", patch_positions=None
+):
+    """
+    Function to get activation patching results for only specific positions.
+    
+    Args:
+        model: The relevant model
+        corrupted_tokens: The input tokens for the corrupted run
+        clean_cache: The cached activations from the clean run
+        patching_metric: A function from the model's output logits to some metric
+        activation_name: The name of the activation to patch
+        patch_positions: List of positions to patch (if None, all positions are patched)
+    
+    Returns:
+        patched_output: The tensor of the patching metric for each patch
+    """
+    # Create a dataframe with all possible layer, position combinations
+    all_indices = make_df_from_ranges(
+        [model.cfg.n_layers, corrupted_tokens.shape[-1]], 
+        ["layer", "pos"]
+    )
+    
+    # Filter to only include specified positions
+    if patch_positions is not None:
+        filtered_indices = all_indices[all_indices["pos"].isin(patch_positions)]
+    else:
+        filtered_indices = all_indices
+    
+    # Use the filtered dataframe with generic_activation_patch
+    return generic_activation_patch(
+        model=model,
+        corrupted_tokens=corrupted_tokens,
+        clean_cache=clean_cache,
+        patching_metric=patching_metric,
+        patch_setter=layer_pos_patch_setter,
+        activation_name=activation_name,
+        index_df=filtered_indices
+    )
+
 # %%
 #Patching to localize information
 if __name__ == "__main__":
-    from transformer_lens.patching import get_act_patch_resid_pre
-
     clean_input = """The city of Oakland is not in the United States. This statement is: False
     The city of Canberra is in Australia. This statement is: True
-    The city of Seattle is in the United States. This statement is:"""
+    The city of Chicago is in the United States. This statement is:"""
 
     corrupted_input = """The city of Oakland is not in the United States. This statement is: False
     The city of Canberra is in Australia. This statement is: True
@@ -1074,7 +1119,8 @@ if __name__ == "__main__":
 
     clean_tokens = model2b.tokenizer.encode(clean_input, return_tensors='pt').to(device)
     corrupted_tokens = model2b.tokenizer.encode(corrupted_input, return_tensors='pt').to(device)
-    _, clean_cache = model2b.run_with_cache(clean_tokens)
+    clean_logits, clean_cache = model2b.run_with_cache(clean_tokens)
+    print(t.topk(F.softmax(clean_logits[0,-1]), k = 10))
     true_token_id = model2b.tokenizer.encode(" True")[1]  # Note the space before "True"
     false_token_id = model2b.tokenizer.encode(" False")[1]  # Note the space before "False"
 
@@ -1082,21 +1128,26 @@ if __name__ == "__main__":
         return logits[0, -1, true_token_id] - logits[0, -1, false_token_id]
     
     patch_results = get_act_patch_resid_pre(
-    model= model2b,
-    corrupted_tokens = corrupted_tokens,
-    clean_cache = clean_cache,
-    patching_metric = patching_metric
-)
+        model= model2b,
+        corrupted_tokens = corrupted_tokens,
+        clean_cache = clean_cache,
+        patching_metric = patching_metric,
+    )
     t.save(patch_results, "patch_results.pt")
+    import sys
+    is_interactive = hasattr(sys, 'ps1') or 'ipykernel' in sys.modules
+    
+    if is_interactive:
+        imshow(
+            patch_results,
+            labels={"x": "Token Position", "y": "Layer"},
+            title="Patching results for the truthfulness information",
+            width=1000
+        )
+    else:
+        print('No patching visualization in non-interactive mode')
 
-#%%
-if __name__ == "__main__":
-    imshow(
-    patch_results,
-    labels={"x": "Token Position", "y": "Layer"},
-    title="Patching results for the truthfulness information",
-    width=1000
-)
+
 
 #%%
 #Generate probes for the two shot prompted data
@@ -1177,10 +1228,6 @@ if __name__ == "__main__":
 
 
 
-
-
-
-
 # %%
 #Applying steering
 if __name__ == "__main__":
@@ -1190,7 +1237,8 @@ if __name__ == "__main__":
     # Get token IDs for "True" and "False"
       # Note the space before "False"
     np.random.seed(32)
-    df_sample = df.sample(320)
+    df_sample = df.sample(480)
+    df_sample.to_csv("df_sample.csv", index=False)
     sample_tokenized = tokenize_data(df_sample, model2b.tokenizer, 'twoshot_prompt')
     # Generate steering results
     steering_results = generate_steering_results(
@@ -1209,4 +1257,3 @@ if __name__ == "__main__":
         n_probes=25
     )
 
-# %%
