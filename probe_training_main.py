@@ -486,6 +486,7 @@ def run_probing_pipeline(df, tokenized_all, model, sae, device,
 #Setup
 # %%
 if __name__ == "__main__":
+    print("Setting up the probing pipeline")
     device = t.device('cuda:0')
     test_last_token_extraction()
     
@@ -551,6 +552,7 @@ if __name__ == "__main__":
         results_csv="probe_results_truth.csv",
         similarities_csv="probe_similarities_truth.csv"
     )
+    del feats_all_input, feats_all_recons, feats_all_diff, features_map_last
 
 # %%
 if __name__ == "__main__":
@@ -585,6 +587,7 @@ if __name__ == "__main__":
         results_csv="probe_results_truth_second_last.csv",
         similarities_csv="probe_similarities_truth_second_last.csv"
     )
+    del feats_all_input_2nd, feats_all_recons_2nd, feats_all_diff_2nd, features_map_2nd
 # %%
 #Run probe on twitter happiness
 
@@ -619,6 +622,10 @@ if __name__ == "__main__":
         similarities_csv="probe_similarities_tw_happiness.csv"
     )
     results_df_tw.groupby(['Feature Type', 'Label'])['Test Accuracy'].mean().reset_index()
+    del feats_tw_input, feats_tw_recons, feats_tw_diff, features_map_tw
+    t.cuda.empty_cache()
+    import gc
+    gc.collect()
     
 # %%
 #Run probe on headline front page
@@ -653,6 +660,7 @@ if __name__ == "__main__":
         results_csv="probe_results_hl_frontp.csv",
         similarities_csv="probe_similarities_hl_frontp.csv"
     )
+    del feats_hl_input, feats_hl_recons, feats_hl_diff, features_map_hl
 
 # %%
 #Run probe on if the borough is manhattan
@@ -687,8 +695,7 @@ if __name__ == "__main__":
         results_csv="probe_results_man_borough.csv",
         similarities_csv="probe_similarities_man_borough.csv"
     )
-    results_df_man.groupby(['Feature Type', 'Label'])['Test Accuracy', 'Test Loss'].mean().reset_index()
-
+    del feats_man_input, feats_man_recons, feats_man_diff, features_map_man
 # %%
 # run probe on athlete sport basketball 155_athlete_sport_basketball.csv
 
@@ -723,6 +730,8 @@ if __name__ == "__main__":
         similarities_csv="probe_similarities_ath_sport.csv"
     )
     results_df_ath.groupby(['Feature Type', 'Label'])['Test Loss'].mean().reset_index()
+    del feats_ath_input, feats_ath_recons, feats_ath_diff, features_map_ath
+    t.cuda.empty_cache()
     
 
 
@@ -1133,6 +1142,7 @@ if __name__ == "__main__":
     def patching_metric(logits):
         return logits[0, -1, true_token_id] - logits[0, -1, false_token_id]
     
+
     patch_results = get_act_patch_resid_pre(
         model= model2b,
         corrupted_tokens = corrupted_tokens,
@@ -1153,6 +1163,7 @@ if __name__ == "__main__":
         )
     else:
         print('No patching visualization in non-interactive mode')
+    gc.collect()
 
 
 
@@ -1187,6 +1198,7 @@ if __name__ == "__main__":
         similarities_csv="probe_similarities_twoshot.csv"
     )
     results_df_twoshot.groupby(['Feature Type', 'Label'])['Test Loss'].mean().reset_index()
+    del feats_twoshot_input, feats_twoshot_recons, feats_twoshot_diff, features_map_twoshot
 
 # %%
 #Checking the dot products
@@ -1233,6 +1245,8 @@ if __name__ == "__main__":
         print("Running in non-interactive mode. Saving figure to 'dot_products_histogram.png'")
         plt.savefig('dot_products_histogram.png')
         plt.close(fig)
+    t.cuda.empty_cache()
+
 
 
 
@@ -1265,3 +1279,5 @@ if __name__ == "__main__":
         n_probes=25
     )
 
+
+# %%
