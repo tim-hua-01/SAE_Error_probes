@@ -547,9 +547,9 @@ if __name__ == "__main__":
         features_map=features_map_last,
         n_seeds=50,
         save_probes_count=20,
-        probe_save_dir="trained_probes_truth_last",
-        results_csv="probe_results_truth_last.csv",
-        similarities_csv="probe_similarities_truth_last.csv"
+        probe_save_dir="trained_probes_truth",
+        results_csv="probe_results_truth.csv",
+        similarities_csv="probe_similarities_truth.csv"
     )
 
 # %%
@@ -589,6 +589,7 @@ if __name__ == "__main__":
 #Run probe on twitter happiness
 
 if __name__ == "__main__":
+    print("Running probing pipeline on TWITTER HAPPINESS...")
     tw_happiness = pd.read_csv('149_twt_emotion_happiness.csv')
     tw_happiness_tokenized = tokenize_data(tw_happiness, model2b.tokenizer, 'prompt')
 
@@ -623,6 +624,7 @@ if __name__ == "__main__":
 #Run probe on headline front page
 
 if __name__ == "__main__":
+    print("Running probing pipeline on HEADLINE FRONT PAGE...")
     hl_frontp = pd.read_csv('headline_frontpage_sample.csv')
     hl_frontp_tokenized = tokenize_data(hl_frontp, model2b.tokenizer, 'prompt')
 
@@ -656,6 +658,7 @@ if __name__ == "__main__":
 #Run probe on if the borough is manhattan
 
 if __name__ == "__main__":
+    print("Running probing pipeline on MANHATTAN...")
     manhattan = pd.read_csv('114_nyc_borough_Manhattan.csv')
     manhattan_tokenized = tokenize_data(manhattan, model2b.tokenizer, 'prompt')
 
@@ -690,6 +693,7 @@ if __name__ == "__main__":
 # run probe on athlete sport basketball 155_athlete_sport_basketball.csv
 
 if __name__ == "__main__":
+    print("Running probing pipeline on ATHLETE SPORT BASKETBALL...")
     athlete_sport = pd.read_csv('155_athlete_sport_basketball.csv')
     athlete_sport_tokenized = tokenize_data(athlete_sport, model2b.tokenizer, 'prompt')
     
@@ -727,7 +731,8 @@ if __name__ == "__main__":
 # %%
 
 #Probe steering
-
+if __name__ == "__main__":
+    print("Getting steering functions")
 def steer_at_last_pos(
     input_resid: t.Tensor,
     hook: HookPoint,
@@ -1109,6 +1114,7 @@ def get_act_patch_specific_positions(
 # %%
 #Patching to localize information
 if __name__ == "__main__":
+    print("Patching to localize information")
     clean_input = """The city of Oakland is not in the United States. This statement is: False
     The city of Canberra is in Australia. This statement is: True
     The city of Chicago is in the United States. This statement is:"""
@@ -1134,6 +1140,7 @@ if __name__ == "__main__":
         patching_metric = patching_metric,
     )
     t.save(patch_results, "patch_results.pt")
+    t.cuda.empty_cache()
     import sys
     is_interactive = hasattr(sys, 'ps1') or 'ipykernel' in sys.modules
     
@@ -1153,7 +1160,7 @@ if __name__ == "__main__":
 #Generate probes for the two shot prompted data
 if __name__ == "__main__":
     twoshot_tokenized = tokenize_data(df, model2b.tokenizer, 'twoshot_prompt')
-    
+    print("Generating probing results for the two shot prompted data")
     feats_twoshot_input, feats_twoshot_recons, feats_twoshot_diff = generate_probing_features(
         twoshot_tokenized, model2b, sae, batch_size=8, device=device, offset=1
     )
@@ -1182,14 +1189,9 @@ if __name__ == "__main__":
     results_df_twoshot.groupby(['Feature Type', 'Label'])['Test Loss'].mean().reset_index()
 
 # %%
-#Use patching to verify that the truthfulness information is there indeed
-
-
-
-
-# %%
 #Checking the dot products
 if __name__ == "__main__":
+    print("Checking the dot products")
     prompted_tokenized = tokenize_data(df.sample(128), model2b.tokenizer, 'twoshot_prompt')
     # Compute dot products between residual stream and probe weights
     dot_products = compute_residual_probe_dot_products(
@@ -1224,7 +1226,13 @@ if __name__ == "__main__":
             axes[i].legend()
 
     plt.tight_layout()
-    plt.show()
+    if is_interactive:
+        plt.show()
+    else:
+        # Save the figure instead of displaying it
+        print("Running in non-interactive mode. Saving figure to 'dot_products_histogram.png'")
+        plt.savefig('dot_products_histogram.png')
+        plt.close(fig)
 
 
 
@@ -1233,7 +1241,7 @@ if __name__ == "__main__":
 if __name__ == "__main__":
     # Example usage of the steering function
     scaling_range = [-20,-10,-8,-5.0, 5.0, 8, 10, 20]
-    
+    print("Generating steering results")
     # Get token IDs for "True" and "False"
       # Note the space before "False"
     np.random.seed(32)

@@ -1,3 +1,4 @@
+# %%
 import torch as t
 from functools import partial
 import torch.nn as nn
@@ -65,7 +66,7 @@ def imshow(tensor, renderer=None, **kwargs):
         for i, label in enumerate(facet_labels):
             fig.layout.annotations[i]['text'] = label
     fig.show(renderer=renderer)
-
+#%%
 if __name__ == "__main__":
     patch_results = t.load("patch_results.pt")
     print('yeet')
@@ -76,3 +77,4 @@ if __name__ == "__main__":
         width=1000
     )
     print('oink')
+# %%
