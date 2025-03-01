@@ -15,6 +15,7 @@ from warnings import warn
 import os
 import time  # For timing the training loops
 from functools import partial
+from huggingface_hub import login
 from torch import Tensor
 from transformer_lens.patching import get_act_patch_resid_pre,make_df_from_ranges, generic_activation_patch, layer_pos_patch_setter
 
@@ -489,6 +490,7 @@ if __name__ == "__main__":
     print("Setting up the probing pipeline")
     device = t.device('cuda:0')
     test_last_token_extraction()
+    login()
     
     # Read datasets and combine them.
     df = pd.read_csv("all_cities.csv")
@@ -546,7 +548,7 @@ if __name__ == "__main__":
         device=device,
         label_columns=label_columns,
         features_map=features_map_last,
-        n_seeds=50,
+        n_seeds=100,
         save_probes_count=20,
         probe_save_dir="trained_probes_truth",
         results_csv="probe_results_truth.csv",
@@ -581,7 +583,7 @@ if __name__ == "__main__":
         device=device,
         label_columns=label_columns,
         features_map=features_map_2nd,
-        n_seeds=50,
+        n_seeds=100,
         save_probes_count=0,
         probe_save_dir="trained_probes_truth_second_last",
         results_csv="probe_results_truth_second_last.csv",
@@ -615,7 +617,7 @@ if __name__ == "__main__":
         device=device,
         label_columns=['target'],
         features_map=features_map_tw,
-        n_seeds=50,
+        n_seeds=100,
         save_probes_count=0,
         probe_save_dir="trained_probes_truth_tw",
         results_csv="probe_results_tw_happiness.csv",
@@ -654,7 +656,7 @@ if __name__ == "__main__":
         device=device,
         label_columns=['target'],
         features_map=features_map_hl,
-        n_seeds=50,
+        n_seeds=100,
         save_probes_count=0,
         probe_save_dir="trained_probes_truth_hl",
         results_csv="probe_results_hl_frontp.csv",
@@ -689,7 +691,7 @@ if __name__ == "__main__":
         device=device,
         label_columns=['target'],
         features_map=features_map_man,
-        n_seeds=50,
+        n_seeds=100,
         save_probes_count=0,
         probe_save_dir="trained_probes_truth_man",
         results_csv="probe_results_man_borough.csv",
@@ -723,7 +725,7 @@ if __name__ == "__main__":
         device=device,
         label_columns=['target'],
         features_map=features_map_ath,
-        n_seeds=50,
+        n_seeds=100,
         save_probes_count=0,
         probe_save_dir="trained_probes_truth_ath",
         results_csv="probe_results_ath_sport.csv",
@@ -1138,7 +1140,7 @@ if __name__ == "__main__":
     print(t.topk(F.softmax(clean_logits[0,-1]), k = 10))
     true_token_id = model2b.tokenizer.encode(" True")[1]  # Note the space before "True"
     false_token_id = model2b.tokenizer.encode(" False")[1]  # Note the space before "False"
-
+    """
     def patching_metric(logits):
         return logits[0, -1, true_token_id] - logits[0, -1, false_token_id]
     
@@ -1163,6 +1165,7 @@ if __name__ == "__main__":
         )
     else:
         print('No patching visualization in non-interactive mode')
+    """
     gc.collect()
 
 
@@ -1191,7 +1194,7 @@ if __name__ == "__main__":
         device=device,
         label_columns=['label'],
         features_map=features_map_twoshot,
-        n_seeds=50,
+        n_seeds=100,
         save_probes_count=25,
         probe_save_dir="trained_probes_truth_twoshot",
         results_csv="probe_results_twoshot.csv",
@@ -1199,6 +1202,8 @@ if __name__ == "__main__":
     )
     results_df_twoshot.groupby(['Feature Type', 'Label'])['Test Loss'].mean().reset_index()
     del feats_twoshot_input, feats_twoshot_recons, feats_twoshot_diff, features_map_twoshot
+
+assert False
 
 # %%
 #Checking the dot products
