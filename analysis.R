@@ -106,6 +106,7 @@ probe_summarizer <- function(probe_name, some_probes){
                        list(raw = "std.error", clean = "Std.Errors", fmt = "%.3f")
                      ),# Add significance stars
                      output = "markdown"))
+  return(probe_summary)
 }
 
 
@@ -116,25 +117,55 @@ probe_summarizer <- function(probe_name, some_probes){
 #Data summari
 
 truth_probes <- read_csv('probe_results_truth.csv')
-probe_summarizer('Probing for Truth in Cities Dataset', truth_probes)
+truth_summary <- probe_summarizer('Probing for Truth in Cities Dataset', truth_probes)
 
 truth_probes_2nd <- read_csv('probe_results_truth_second_last.csv')
-probe_summarizer('Probing for Truth (2nd last token)', truth_probes_2nd)
+truth_2nd_summary <- probe_summarizer('Probing for Truth (2nd last token)', truth_probes_2nd)
 
 headline_probes <- read_csv('probe_results_hl_frontp.csv')
-probe_summarizer('Probing for Front Page Headlines', headline_probes)
+headline_summary <- probe_summarizer('Probing for Headline (Front Page)', headline_probes)
 
 manhattan_probes <- read_csv('probe_results_man_borough.csv')
-probe_summarizer('Probing for in Manhattan', manhattan_probes)
+manhattan_summary <- probe_summarizer('Probing for in Manhattan', manhattan_probes)
 
 tw_happy <- read_csv('probe_results_tw_happiness.csv')
-probe_summarizer('Probing for Happiness in Tweets', tw_happy)
+tw_happy_summary <- probe_summarizer('Probing for Happiness in Tweets', tw_happy)
 
 basketball <- read_csv('probe_results_ath_sport.csv')
-probe_summarizer('Probing for Basketball Atheletes', basketball)
+basketball_summary <- probe_summarizer('Probing for Basketball Atheletes', basketball)
 
 twoshot <- read_csv('probe_results_twoshot.csv')
-probe_summarizer('Probing for Truth with Two shot prompt', twoshot)
+twoshot_summary <- probe_summarizer('Probing for Truth with Two shot prompt', twoshot)
+
+combined_plot <- truth_summary %>% mutate(Dataset = "Truth") %>% 
+  add_row(truth_2nd_summary %>% mutate(Dataset = "Truth (second last token)")) %>%
+  add_row(headline_summary %>% mutate(Dataset = "Frontpage headlines")) %>%
+  add_row(manhattan_summary %>% mutate(Dataset = "Location in Manhattan")) %>%
+  add_row(tw_happy_summary %>% mutate(Dataset = "Happiness in Tweet")) %>%
+  add_row(basketball_summary %>% mutate(Dataset = "Athelete plays basketball"))
+
+
+ggplot(combined_plot, aes(x = graph_labels, 
+                          y = mean_test_loss,
+                          color = graph_labels,
+                          shape = graph_labels)) +  # Add color aesthetic
+  geom_point() + 
+  myTheme + 
+  labs(y = 'Probe Out of Sample Loss', 
+       x = NULL,
+       title = "Probing SAE error is still better on layer 21",
+       subtitle = "Only 50 seeds used for layer 21",
+       caption = "Loss calculated with BCEWithLogitsLoss in PyTorch",
+       color = "Probe Location", shape = "Probe Location") + 
+  geom_errorbar(aes(ymin = mean_test_loss - 1.96*se_test_loss, 
+                    ymax = mean_test_loss + 1.96*se_test_loss),
+                width = 0.1) +
+  scale_y_continuous(breaks = seq(0,6,1)) + 
+  facet_wrap(~Dataset) +
+  theme(axis.text.x = element_blank(),  # Remove x-axis text
+        axis.ticks.x = element_blank(),
+        legend.position = 'bottom') +  # Remove x-axis ticks
+  scale_color_manual(values = c(nicepurp, niceblue, nicegreen))
 
 
 steering_results_truth <- read_csv("~/OneDrive/Coding/AISC/SAE_Error_probes/steering_results_truth.csv")
