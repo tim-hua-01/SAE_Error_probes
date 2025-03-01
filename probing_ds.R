@@ -75,7 +75,7 @@ probe_summarizer <- function(probe_name, some_probes){
   
   print(modelsummary(feols(Test_Loss ~ Feature_Type | as.factor(Seed), data = some_probes, vcov = ~Seed),
                      fmt = "%.3f",        # 3 decimal places
-                     stars = TRUE,title = "Test loss mean differences",            # Show confidence intervals instead of std errors
+                     stars = TRUE,title = str_c(probe_name,": Test loss mean differences Layer 19"),           # Show confidence intervals instead of std errors
                      statistic = c("conf.int"),
                      conf_level = 0.95,
                      coef_map = c(
@@ -91,7 +91,7 @@ probe_summarizer <- function(probe_name, some_probes){
   
   print(modelsummary(feols(Test_Accuracy ~ Feature_Type | as.factor(Seed), data = some_probes, vcov = ~Seed),
                      fmt = "%.3f",        # 3 decimal places
-                     stars = TRUE,title = "Test accuracy mean differences",            # Show confidence intervals instead of std errors
+                     stars = TRUE,title =str_c(probe_name,": Test accuracy mean differences Layer 19"),          # Show confidence intervals instead of std errors
                      statistic = c("conf.int"),
                      conf_level = 0.95,
                      coef_map = c(
@@ -122,8 +122,31 @@ probe_summarizer('Probing for Truth in Cities Dataset', truth_probes)
 truth_probes_2nd <- read_csv('probe_results_truth_second_last.csv')
 probe_summarizer('Probing for Truth (2nd last token)', truth_probes_2nd)
 
+headline_probes <- read_csv('probe_results_hl_frontp.csv')
+probe_summarizer('Probing for Front Page Headlines', headline_probes)
+
 manhattan_probes <- read_csv('probe_results_man_borough.csv')
 probe_summarizer('Probing for in Manhattan', manhattan_probes)
 
 tw_happy <- read_csv('probe_results_tw_happiness.csv')
 probe_summarizer('Probing for Happiness in Tweets', tw_happy)
+
+basketball <- read_csv('probe_results_ath_sport.csv')
+probe_summarizer('Probing for Basketball Atheletes', basketball)
+
+twoshot <- read_csv('probe_results_twoshot.csv')
+probe_summarizer('Probing for Truth with Two shot prompt', twoshot)
+
+
+steering_results_truth <- read_csv("~/OneDrive/Coding/AISC/SAE_Error_probes/steering_results_truth.csv")
+feols(Steered_Logit_Diff ~ as.factor(Scaling_Factor) | Sample_Index, 
+      data = steering_results_truth %>% filter(Feature_Type == "sae_input"), vcov = ~Sample_Index)
+
+feols(Steered_Logit_Diff ~ as.factor(Scaling_Factor) | Sample_Index, 
+      data = steering_results_truth %>% filter(Feature_Type == "sae_recons"), vcov = ~Sample_Index)
+
+feols(Steered_Logit_Diff ~ as.factor(Scaling_Factor) | Sample_Index, 
+      data = steering_results_truth %>% filter(Feature_Type == "sae_diff"), vcov = ~Sample_Index)
+
+mean(abs(steering_results_truth$Baseline_Logit_Diff))
+
