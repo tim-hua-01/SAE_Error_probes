@@ -104,6 +104,7 @@ probe_summarizer <- function(probe_name, some_probes){
                        list(raw = "std.error", clean = "Std.Errors", fmt = "%.3f")
                      ),# Add significance stars
                      output = "markdown"))
+  return(probe_summary)
 }
 
 
@@ -117,25 +118,25 @@ truth_df <- read_csv('all_cities.csv')
 View(slice_sample(truth_df, n= 10))
 
 truth_probes <- read_csv('probe_results_truth.csv')
-probe_summarizer('Probing for Truth in Cities Dataset', truth_probes)
+truth_summary <- probe_summarizer('Probing for Truth in Cities Dataset', truth_probes)
 
 truth_probes_2nd <- read_csv('probe_results_truth_second_last.csv')
-probe_summarizer('Probing for Truth (2nd last token)', truth_probes_2nd)
+truth_2nd_summary <- probe_summarizer('Probing for Truth (2nd last token)', truth_probes_2nd)
 
 headline_probes <- read_csv('probe_results_hl_frontp.csv')
-probe_summarizer('Probing for Front Page Headlines', headline_probes)
+headline_summary <- probe_summarizer('Probing for Headline (Front Page)', headline_probes)
 
 manhattan_probes <- read_csv('probe_results_man_borough.csv')
-probe_summarizer('Probing for in Manhattan', manhattan_probes)
+manhattan_summary <- probe_summarizer('Probing for in Manhattan', manhattan_probes)
 
 tw_happy <- read_csv('probe_results_tw_happiness.csv')
-probe_summarizer('Probing for Happiness in Tweets', tw_happy)
+tw_happy_summary <- probe_summarizer('Probing for Happiness in Tweets', tw_happy)
 
 basketball <- read_csv('probe_results_ath_sport.csv')
-probe_summarizer('Probing for Basketball Atheletes', basketball)
+basketball_summary <- probe_summarizer('Probing for Basketball Atheletes', basketball)
 
 twoshot <- read_csv('probe_results_twoshot.csv')
-probe_summarizer('Probing for Truth with Two shot prompt', twoshot)
+twoshot_summary <- probe_summarizer('Probing for Truth with Two shot prompt', twoshot)
 
 
 steering_results_truth <- read_csv("~/OneDrive/Coding/AISC/SAE_Error_probes/steering_results_truth.csv")
@@ -149,4 +150,104 @@ feols(Steered_Logit_Diff ~ as.factor(Scaling_Factor) | Sample_Index,
       data = steering_results_truth %>% filter(Feature_Type == "sae_diff"), vcov = ~Sample_Index)
 
 mean(abs(steering_results_truth$Baseline_Logit_Diff))
+
+combined_plot <- truth_summary %>% mutate(Dataset = "Truth") %>% 
+  add_row(truth_2nd_summary %>% mutate(Dataset = "Truth (second last token)")) %>%
+  add_row(headline_summary %>% mutate(Dataset = "Frontpage headlines")) %>%
+  add_row(manhattan_summary %>% mutate(Dataset = "Location in Manhattan")) %>%
+  add_row(tw_happy_summary %>% mutate(Dataset = "Happiness in Tweet")) %>%
+  add_row(basketball_summary %>% mutate(Dataset = "Athelete plays basketball"))
+  
+  
+ggplot(combined_plot, aes(x = graph_labels, 
+                          y = mean_test_loss,
+                          color = graph_labels,
+                          shape = graph_labels)) +  # Add color aesthetic
+  geom_point() + 
+  myTheme + 
+  labs(y = 'Probe Out of Sample Loss', 
+       x = NULL,
+       title = "Out of sample loss is lower on SAE Error across settings",
+       subtitle = "Error bars indicate randomness from using different seeds",
+       caption = "Loss calculated with BCEWithLogitsLoss in PyTorch",
+       color = "Probe Location", shape = "Probe Location") + 
+  geom_errorbar(aes(ymin = mean_test_loss - 1.96*se_test_loss, 
+                    ymax = mean_test_loss + 1.96*se_test_loss),
+                width = 0.1) +
+  scale_y_continuous() + 
+  facet_wrap(~Dataset) +
+  theme(axis.text.x = element_blank(),  # Remove x-axis text
+        axis.ticks.x = element_blank(),
+        legend.position = 'bottom') +  # Remove x-axis ticks
+  scale_color_manual(values = c(nicepurp, niceblue, nicegreen))
+  
+
+
+
+ggplot(combined_plot, aes(x = graph_labels, 
+                          y = mean_test_accuracy,
+                          color = graph_labels,
+                          shape = graph_labels)) +  # Add color aesthetic
+  geom_point() + 
+  myTheme + 
+  labs(y = 'Probe Out of Sample Accuracy', 
+       x = NULL,
+       title = "Accuracy is higher on SAE Error in most settings",
+       subtitle = "Error bars indicate randomness from using different seeds",
+       color = "Probe Location", shape = "Probe Location") + 
+  geom_errorbar(aes(ymin = mean_test_accuracy - 1.96*se_test_accuracy, 
+                    ymax = mean_test_accuracy + 1.96*se_test_accuracy),
+                width = 0.1) +
+  scale_y_continuous(labels = scales::percent) + 
+  facet_wrap(~Dataset) +
+  theme(axis.text.x = element_blank(),  # Remove x-axis text
+        axis.ticks.x = element_blank(),
+        legend.position = 'bottom') +  # Remove x-axis ticks
+  scale_color_manual(values = c(nicepurp, niceblue, nicegreen))
+
+steering_summary <- steering_results_truth %>% group_by(Scaling_Factor, Feature_Type) %>%
+  summarise(mean_logit_diff = mean(Steered_Logit_Diff),
+            se_logit_diff = sd(Steered_Logit_Diff)/sqrt(n()))
+
+steering_summary %<>% mutate(Probe_Location = case_when(Feature_Type == 'sae_diff' ~ 'SAE Error',
+                                                       Feature_Type == 'sae_input' ~ 'Residual Stream',
+                                                       TRUE ~ 'SAE Reconstruction'))
+
+steering_summary %>% ungroup() %>% ggplot(aes(x = Scaling_Factor, y = mean_logit_diff)) +
+  geom_point() + facet_wrap(~Probe_Location) +
+  geom_errorbar(aes(ymin = mean_logit_diff - 1.96*se_logit_diff, 
+                    ymax = mean_logit_diff + 1.96*se_logit_diff),
+                width = 2) +
+  labs(title = "Sterering using SAE error probes have less downstream effects on token logits",
+       subtitle = "Mean absolute logit difference without steering is 0.598",
+       y = "Logit difference between ' True' and ' False' tokens",
+       x = "Scaling factor on the probe for steering",
+       caption = "These standard errors are large partially because I'm steering on 420 different pieces of text") +
+  myTheme
+
+
+
+residual_probe_dot_products <- read_csv("residual_probe_dot_products.csv")
+
+residual_probe_dot_products %>% select(sae_input_dot_product, 
+                                       sae_recons_dot_product, sae_diff_dot_product) %>%
+  pivot_longer(cols = c(sae_input_dot_product, 
+                        sae_recons_dot_product, sae_diff_dot_product),
+               names_to = 'probeloc') %>% 
+  mutate(Probe_Location = case_when(
+    probeloc == 'sae_input_dot_product' ~ 'Residual',
+    probeloc == 'sae_recons_dot_product' ~ 'SAE Reconstruction',
+    TRUE ~ 'SAE Error'
+  )) %>%
+  ggplot() + geom_histogram(aes(value), binwidth = 2, center = 0, fill = niceblue) + 
+  myTheme + 
+  facet_wrap(~Probe_Location) +
+  labs(title = "Dot products along the trained probe direction",
+       caption = "Probe norm normalized to one",
+       subtitle = "Dot products calculated for 20 probes in each category on 128 prompts",
+       x = "Dot products", y = "Count")
+
+
+
+
 

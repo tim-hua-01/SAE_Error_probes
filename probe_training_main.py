@@ -1140,7 +1140,7 @@ if __name__ == "__main__":
     print(t.topk(F.softmax(clean_logits[0,-1]), k = 10))
     true_token_id = model2b.tokenizer.encode(" True")[1]  # Note the space before "True"
     false_token_id = model2b.tokenizer.encode(" False")[1]  # Note the space before "False"
-    """
+
     def patching_metric(logits):
         return logits[0, -1, true_token_id] - logits[0, -1, false_token_id]
     
@@ -1165,7 +1165,7 @@ if __name__ == "__main__":
         )
     else:
         print('No patching visualization in non-interactive mode')
-    """
+
     gc.collect()
 
 
@@ -1203,7 +1203,7 @@ if __name__ == "__main__":
     results_df_twoshot.groupby(['Feature Type', 'Label'])['Test Loss'].mean().reset_index()
     del feats_twoshot_input, feats_twoshot_recons, feats_twoshot_diff, features_map_twoshot
 
-assert False
+
 
 # %%
 #Checking the dot products
